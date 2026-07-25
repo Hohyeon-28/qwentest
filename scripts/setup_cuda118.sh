@@ -60,6 +60,11 @@ python -m pip install --no-cache-dir --only-binary=:all: \
   --index-url https://pypi.org/simple \
   "dill==0.3.8" \
   "multiprocess==0.70.16"
+# Lock the legacy CUDA-11.8-compatible GPTQModel before resolving the large
+# vLLM dependency graph. Otherwise an installed/latest GPTQModel can introduce
+# torch>=2.8 and cause excessive resolver backtracking.
+python -m pip install --no-cache-dir --no-build-isolation --no-deps \
+  "gptqmodel @ https://github.com/ModelCloud/GPTQModel/archive/refs/tags/v3.0.0.tar.gz"
 python -m pip install --no-build-isolation -r requirements-cu118.txt
 python -m pip check
 
