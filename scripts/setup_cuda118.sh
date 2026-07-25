@@ -43,6 +43,9 @@ echo "[toolkit]"
 source "${VENV_DIR}/bin/activate"
 
 python -m pip install --upgrade pip setuptools wheel ninja
+# Remove any newer GPTQModel left in a reused environment before pinning
+# torch 2.6.0. GPTQModel 4+ requires a newer torch/CUDA stack.
+python -m pip uninstall -y gptqmodel
 # Install the CUDA 11.8 build explicitly before packages whose setup.py imports
 # torch. The +cu118 local version also prevents an existing CUDA 12 wheel from
 # being incorrectly accepted as plain torch==2.6.0.
