@@ -1,0 +1,14 @@
+torch>=2.4
+transformers>=4.51
+accelerate>=1.0
+datasets>=3.0
+vllm>=0.8
+gptqmodel>=5.6
+huggingface-hub>=0.30
+PyYAML>=6.0
+safetensors>=0.4
+numpy>=1.26
+pandas>=2.2
+matplotlib>=3.8
+sympy>=1.13
+pytest>=8.0

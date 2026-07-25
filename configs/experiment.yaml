@@ -1,0 +1,66 @@
+experiment:
+  name: qwen3_8b_int4_cot
+  seed: 20250724
+  output_dir: results
+
+models:
+  # BF16 baseline only.
+  base: Qwen/Qwen3-8B
+  # Both Fake and Real MUST use this exact standard GPTQ/GPTQ-v2 checkpoint.
+  real_gptq: REPLACE_WITH_QWEN3_8B_GPTQ_CHECKPOINT
+  trust_remote_code: false
+  revision: main
+
+quantization:
+  shared:
+    source: models.real_gptq
+    tuple: [qweight, scales, qzeros, g_idx]
+    bits: 4
+    group_size: 128
+    fingerprint: sha256
+  fake:
+    method: dequantize_shared_gptq
+    bits: 4
+    group_size: 128
+    symmetric: true
+    desc_act: false
+    compute_dtype: bfloat16
+    execution: torch_linear
+    source: models.real_gptq
+  real:
+    method: gptq
+    bits: 4
+    group_size: 128
+    symmetric: true
+    desc_act: false
+    backend: gptq_marlin
+    source: models.real_gptq
+
+generation:
+  enable_thinking: true
+  max_new_tokens: 4096
+  deterministic: true
+  temperature: 0.0
+  top_p: 1.0
+  top_k: -1
+  seed: 20250724
+  batch_size: 1
+  stop_token_ids: []
+
+datasets:
+  gsm8k:
+    path: openai/gsm8k
+    name: main
+    split: test
+    max_samples: null
+  math500:
+    path: HuggingFaceH4/MATH-500
+    name: null
+    split: test
+    max_samples: null
+
+evaluation:
+  length_buckets: [0, 129, 257, 513, 1025]
+  warmup_samples: 2
+  logit_subset_size: 20
+  logit_top_k: 20
