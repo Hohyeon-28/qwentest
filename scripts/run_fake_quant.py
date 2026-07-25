@@ -40,7 +40,7 @@ def main() -> None:
     samples = load_samples(config, args.dataset, max_samples=args.max_samples)
     output_dir = results_root(config, args.dataset) / "fake_quant"
     output_dir.mkdir(parents=True, exist_ok=True)
-    save_effective_config(config, args.dataset)
+    save_effective_config(config, args.dataset, condition="fake_quant")
 
     manifest = fingerprint_gptq_checkpoint(
         config["models"]["real_gptq"], revision=config["models"]["revision"]
@@ -64,7 +64,7 @@ def main() -> None:
     for report in reports:
         append_jsonl(report_path, report)
     write_environment(
-        results_root(config, args.dataset) / "environment.json",
+        output_dir / "environment.json",
         {
             "fake_quant_source": config["models"]["real_gptq"],
             "fake_quant_tuple_sha256": manifest["tuple_sha256"],

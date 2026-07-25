@@ -156,6 +156,26 @@ python scripts/plot_results.py \
 동일하게 `--dataset math500`으로 MATH-500을 실행합니다. 중단 후 같은 명령을
 다시 실행하면 저장된 sample ID 이후부터 resume합니다.
 
+한 번에 순차 실행하려면 다음 명령을 사용합니다. 기본값은 MATH-500과 GPU 7입니다.
+
+```bash
+bash scripts/run_experiment.sh
+```
+
+GPU 6과 7에서 병렬 실행하려면 다음 명령을 사용합니다. BF16은 GPU 6,
+Fake와 Real은 GPU 7에서 순차 실행되며, 두 worker가 끝난 뒤 평가와 plot을
+생성합니다.
+
+```bash
+bash scripts/run_experiment_parallel.sh
+```
+
+다른 데이터셋이나 GPU를 지정할 수도 있습니다.
+
+```bash
+bash scripts/run_experiment_parallel.sh gsm8k 6 7
+```
+
 ## 두 종류의 풀이 길이
 
 ```text
@@ -194,17 +214,21 @@ truncated-union 근사 KL, reference-token logprob 차이를 계산합니다.
 
 ```text
 results/<dataset>/
-├── config.json
-├── environment.json
 ├── bf16/
+│   ├── config.json
+│   ├── environment.json
 │   ├── predictions.jsonl
 │   └── summary.json
 ├── fake_quant/
+│   ├── config.json
+│   ├── environment.json
 │   ├── predictions.jsonl
 │   ├── summary.json
 │   ├── quantization_manifest.json
 │   └── dequantization_report.jsonl
 ├── real_quant_marlin/
+│   ├── config.json
+│   ├── environment.json
 │   ├── predictions.jsonl
 │   ├── summary.json
 │   ├── quantization_manifest.json

@@ -24,9 +24,9 @@ def main() -> None:
     samples = load_samples(config, args.dataset, max_samples=args.max_samples)
     output_dir = results_root(config, args.dataset) / "bf16"
     output_dir.mkdir(parents=True, exist_ok=True)
-    save_effective_config(config, args.dataset)
+    save_effective_config(config, args.dataset, condition="bf16")
     write_environment(
-        results_root(config, args.dataset) / "environment.json",
+        output_dir / "environment.json",
         {"bf16_model": config["models"]["base"], "bf16_backend": "transformers"},
     )
 

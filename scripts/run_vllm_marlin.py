@@ -122,7 +122,7 @@ def main() -> None:
     samples = load_samples(config, args.dataset, max_samples=args.max_samples)
     output_dir = results_root(config, args.dataset) / "real_quant_marlin"
     output_dir.mkdir(parents=True, exist_ok=True)
-    save_effective_config(config, args.dataset)
+    save_effective_config(config, args.dataset, condition="real_quant_marlin")
     predictions = output_dir / "predictions.jsonl"
     if args.overwrite and predictions.exists():
         predictions.unlink()
@@ -163,7 +163,7 @@ def main() -> None:
     except Exception:
         selected_backend = "gptq_marlin (requested; inspect startup.log for resolved kernel)"
     write_environment(
-        results_root(config, args.dataset) / "environment.json",
+        output_dir / "environment.json",
         {
             "real_model": config["models"]["real_gptq"],
             "real_quantization_config": quant_config,

@@ -39,8 +39,12 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--overwrite", action="store_true")
 
 
-def save_effective_config(config: dict[str, Any], dataset: str) -> Path:
+def save_effective_config(
+    config: dict[str, Any], dataset: str, condition: str | None = None
+) -> Path:
     output = results_root(config, dataset)
+    if condition is not None:
+        output = output / condition
     output.mkdir(parents=True, exist_ok=True)
     target = output / "config.json"
     target.write_text(
