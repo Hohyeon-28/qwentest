@@ -51,6 +51,12 @@ python -m pip install --upgrade --force-reinstall \
   "torchvision==0.21.0+cu118" \
   "torchaudio==2.6.0+cu118" \
   --index-url https://download.pytorch.org/whl/cu118
+# Some package mirrors/cache states select multiprocess's source archive even
+# though a Python 3.10 wheel exists. Avoid its broken sdist metadata path.
+python -m pip install --no-cache-dir --only-binary=:all: \
+  --index-url https://pypi.org/simple \
+  "dill==0.3.8" \
+  "multiprocess==0.70.16"
 python -m pip install --no-build-isolation -r requirements-cu118.txt
 python -m pip check
 
