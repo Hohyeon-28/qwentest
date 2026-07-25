@@ -70,7 +70,14 @@ python -m pip install --no-cache-dir --only-binary=:all: \
 # torch>=2.8 and cause excessive resolver backtracking.
 python -m pip install --no-cache-dir --no-build-isolation --no-deps \
   "gptqmodel @ https://github.com/ModelCloud/GPTQModel/archive/refs/tags/v3.0.0.tar.gz"
-python -m pip install --no-build-isolation -r requirements-cu118.txt
+# Install the CUDA 11.8 vLLM artifact itself before resolving its large
+# dependency graph. This avoids modern pip's resolution-too-deep failure.
+python -m pip install --no-cache-dir --no-deps \
+  "https://github.com/vllm-project/vllm/releases/download/v0.8.5.post1/vllm-0.8.5.post1+cu118-cp38-abi3-manylinux1_x86_64.whl"
+# This is a deliberately pinned legacy stack. The legacy resolver avoids
+# excessive backtracking; pip check below remains the final consistency gate.
+python -m pip install --use-deprecated=legacy-resolver \
+  --no-build-isolation -r requirements-cu118.txt
 python -m pip check
 
 CUDA_VISIBLE_DEVICES="${TEST_GPU}" python - <<'PY'
