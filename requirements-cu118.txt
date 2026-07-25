@@ -6,6 +6,7 @@ torchvision==0.21.0+cu118
 torchaudio==2.6.0+cu118
 vllm @ https://github.com/vllm-project/vllm/releases/download/v0.8.5.post1/vllm-0.8.5.post1+cu118-cp38-abi3-manylinux1_x86_64.whl
 transformers==4.51.3
+tokenizers==0.21.1
 triton==3.2.0
 xformers==0.0.29.post2
 

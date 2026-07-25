@@ -54,6 +54,11 @@ python -m pip install --upgrade --force-reinstall \
   "torchvision==0.21.0+cu118" \
   "torchaudio==2.6.0+cu118" \
   --index-url https://download.pytorch.org/whl/cu118
+# Pin the Transformers pair before GPTQModel imports Tokenicer. Installing with
+# --no-deps prevents a newer transitive dependency from replacing this pair.
+python -m pip install --no-cache-dir --no-deps --force-reinstall \
+  "transformers==4.51.3" \
+  "tokenizers==0.21.1"
 # Some package mirrors/cache states select multiprocess's source archive even
 # though a Python 3.10 wheel exists. Avoid its broken sdist metadata path.
 python -m pip install --no-cache-dir --only-binary=:all: \
@@ -72,9 +77,12 @@ CUDA_VISIBLE_DEVICES="${TEST_GPU}" python - <<'PY'
 from importlib.metadata import version
 
 import torch
+import torchvision
+from transformers import PreTrainedModel
 
 print("torch:", torch.__version__)
 print("torch CUDA:", torch.version.cuda)
+print("torchvision:", torchvision.__version__)
 print("CUDA available:", torch.cuda.is_available())
 if not torch.cuda.is_available():
     raise RuntimeError("CUDA is unavailable with the CUDA 11.8 environment")
@@ -85,6 +93,8 @@ print("Transformers:", version("transformers"))
 
 if torch.version.cuda != "11.8":
     raise RuntimeError(f"Expected PyTorch cu118, found CUDA {torch.version.cuda}")
+if version("transformers") != "4.51.3":
+    raise RuntimeError(f"Expected Transformers 4.51.3, found {version('transformers')}")
 if not version("vllm").startswith("0.8.5"):
     raise RuntimeError(f"Expected vLLM 0.8.5, found {version('vllm')}")
 if not version("gptqmodel").startswith("3.0"):
