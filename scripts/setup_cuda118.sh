@@ -48,6 +48,8 @@ python -m pip install --upgrade pip setuptools wheel ninja
 # being incorrectly accepted as plain torch==2.6.0.
 python -m pip install --upgrade --force-reinstall \
   "torch==2.6.0+cu118" \
+  "torchvision==0.21.0+cu118" \
+  "torchaudio==2.6.0+cu118" \
   --index-url https://download.pytorch.org/whl/cu118
 python -m pip install --no-build-isolation -r requirements-cu118.txt
 python -m pip check
