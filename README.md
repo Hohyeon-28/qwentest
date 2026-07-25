@@ -96,6 +96,27 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+### 로컬 CUDA 11.8 환경
+
+시스템 드라이버가 CUDA 11.8까지만 지원하고 Toolkit이
+`~/private/cuda-11.8`에 있다면 일반 `requirements.txt` 대신 전용 환경을
+사용합니다. 기존 가상환경을 재사용하지 않습니다.
+
+```bash
+bash scripts/setup_cuda118.sh
+```
+
+설치가 끝나면 MATH-500을 GPU 6과 7에서 병렬 실행합니다.
+
+```bash
+bash scripts/run_cuda118_parallel.sh math500 6 7
+```
+
+이 경로는 PyTorch 2.6.0+cu118, vLLM 0.8.5.post1+cu118,
+Transformers 4.51.3, GPTQModel v3.0.0 tag를 함께 고정합니다. 사용자 공간
+CUDA Toolkit은 시스템 NVIDIA 드라이버를 대체하지 않으므로
+`nvidia-smi`가 동작해야 합니다.
+
 ## checkpoint와 tuple 먼저 검증
 
 ```bash

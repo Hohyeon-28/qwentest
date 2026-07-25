@@ -217,7 +217,14 @@ def dequantize_torch_quant_model_(
     torch.nn.Linear's [out, in] storage.
     """
 
-    from gptqmodel.nn_modules.qlinear.torch import TorchLinear
+    try:
+        from gptqmodel.nn_modules.qlinear.torch import TorchLinear
+    except ImportError:
+        # GPTQModel v3 uses the older class name but exposes the same
+        # dequantize_weight() contract.
+        from gptqmodel.nn_modules.qlinear.torch import (
+            TorchQuantLinear as TorchLinear,
+        )
 
     names = [
         name for name, module in model.named_modules() if isinstance(module, TorchLinear)
@@ -270,9 +277,12 @@ def load_shared_gptq_fake_model(
 
     validate_shared_quant_config(config)
     checkpoint = config["models"]["real_gptq"]
+    torch_backend = getattr(BACKEND, "GPTQ_TORCH", None)
+    if torch_backend is None:
+        torch_backend = BACKEND.TORCH
     loaded = GPTQModel.load(
         model_id_or_path=checkpoint,
-        backend=BACKEND.GPTQ_TORCH,
+        backend=torch_backend,
         device="cpu",
         trust_remote_code=bool(config["models"]["trust_remote_code"]),
     )

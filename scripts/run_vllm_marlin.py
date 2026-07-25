@@ -116,6 +116,7 @@ def main() -> None:
     config = load_config(args.config)
     seed_everything(int(config["generation"]["seed"]))
     quant_config = validate_real_checkpoint(config)
+    real_config = config["quantization"]["real"]
     manifest = fingerprint_gptq_checkpoint(
         config["models"]["real_gptq"], revision=config["models"]["revision"]
     )
@@ -155,6 +156,10 @@ def main() -> None:
                     trust_remote_code=bool(config["models"]["trust_remote_code"]),
                     tensor_parallel_size=args.tensor_parallel_size,
                     gpu_memory_utilization=args.gpu_memory_utilization,
+                    max_model_len=int(real_config.get("max_model_len", 8192)),
+                    enable_chunked_prefill=bool(
+                        real_config.get("enable_chunked_prefill", False)
+                    ),
                 )
 
     selected_backend = None

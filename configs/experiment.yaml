@@ -34,6 +34,8 @@ quantization:
     symmetric: true
     desc_act: false
     backend: gptq_marlin
+    max_model_len: 8192
+    enable_chunked_prefill: false
     source: models.real_gptq
 
 generation:

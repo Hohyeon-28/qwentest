@@ -1,0 +1,24 @@
+--extra-index-url https://download.pytorch.org/whl/cu118
+
+# CUDA 11.8 / Qwen3-compatible runtime. Keep these versions together.
+torch==2.6.0+cu118
+vllm @ https://github.com/vllm-project/vllm/releases/download/v0.8.5.post1/vllm-0.8.5.post1+cu118-cp38-abi3-manylinux1_x86_64.whl
+transformers==4.51.3
+triton==3.2.0
+xformers==0.0.29.post2
+
+# GPTQModel v3.0.0 already contains the Qwen3 definition and supports
+# torch>=2.4.1. Install from the upstream tag because this release is not on PyPI.
+# Newer GPTQModel 4+ requires PyTorch >=2.7.1 and cannot share this cu118 stack.
+gptqmodel @ https://github.com/ModelCloud/GPTQModel/archive/refs/tags/v3.0.0.tar.gz
+
+accelerate>=1.0,<2
+datasets>=3.0,<4
+huggingface-hub>=0.30,<1
+PyYAML>=6.0
+safetensors>=0.4
+numpy>=1.26,<2
+pandas>=2.2,<3
+matplotlib>=3.8,<4
+sympy>=1.13
+pytest>=8.0,<9
