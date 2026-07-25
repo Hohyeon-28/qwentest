@@ -49,7 +49,7 @@ python -m pip install --upgrade pip setuptools wheel ninja
 python -m pip install --upgrade --force-reinstall \
   "torch==2.6.0+cu118" \
   --index-url https://download.pytorch.org/whl/cu118
-python -m pip install -r requirements-cu118.txt
+python -m pip install --no-build-isolation -r requirements-cu118.txt
 python -m pip check
 
 CUDA_VISIBLE_DEVICES="${TEST_GPU}" python - <<'PY'
