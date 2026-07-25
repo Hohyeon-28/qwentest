@@ -29,6 +29,9 @@ fi
 export CUDA_HOME
 export PATH="${CUDA_HOME}/bin:${PATH}"
 export LD_LIBRARY_PATH="${CUDA_HOME}/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+# Bound PyTorch C++/CUDA extension builds (notably GPTQModel) so Ninja does not
+# fan out across every CPU core and exhaust host RAM.
+export MAX_JOBS="${MAX_JOBS:-4}"
 
 echo "[driver]"
 nvidia-smi --query-gpu=index,name,driver_version,memory.total --format=csv
@@ -40,6 +43,12 @@ echo "[toolkit]"
 source "${VENV_DIR}/bin/activate"
 
 python -m pip install --upgrade pip setuptools wheel ninja
+# Install the CUDA 11.8 build explicitly before packages whose setup.py imports
+# torch. The +cu118 local version also prevents an existing CUDA 12 wheel from
+# being incorrectly accepted as plain torch==2.6.0.
+python -m pip install --upgrade --force-reinstall \
+  "torch==2.6.0+cu118" \
+  --index-url https://download.pytorch.org/whl/cu118
 python -m pip install -r requirements-cu118.txt
 python -m pip check
 
