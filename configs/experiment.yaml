@@ -1,8 +1,8 @@
 experiment:
-  name: qwen3_8b_int4_cot_39k
+  name: qwen3_8b_int4_cot_39k_v2
   seed: 20250724
-  # Keep the original 4K run intact.
-  output_dir: results_39k
+  # Keep the original 4K run and any earlier 39K partial run intact.
+  output_dir: results_39k_v2
 
 models:
   # BF16 baseline only.
@@ -39,6 +39,9 @@ quantization:
     # complex-reasoning output budget plus the observed <=799-token prompts.
     max_model_len: 40960
     enable_chunked_prefill: false
+    # Disable CUDA graph/TorchDynamo capture on the legacy CUDA 11.8 stack.
+    # GPTQ-Marlin remains the selected weight kernel.
+    enforce_eager: true
     source: models.real_gptq
 
 generation:
@@ -51,7 +54,9 @@ generation:
   top_k: -1
   seed: 20250724
   batch_size: 1
-  stop_token_ids: []
+  # Qwen3's published generation config uses both <|im_end|> and
+  # <|endoftext|>. The exact same ordered set is passed to HF and vLLM.
+  stop_token_ids: [151645, 151643]
 
 datasets:
   gsm8k:
@@ -75,6 +80,8 @@ evaluation:
   # Abort comparison/plot generation if more than 1% of any condition reaches
   # the output cap without closing </think>.
   max_reasoning_censored_fraction: 0.01
+  # Also reject traces that terminate by EOS without ever closing </think>.
+  max_reasoning_incomplete_fraction: 0.01
   warmup_samples: 2
   logit_subset_size: 20
   logit_top_k: 20

@@ -23,6 +23,11 @@ from src.logging_utils import (
     write_environment,
 )
 from src.metrics import summarize_predictions
+from src.inference import (
+    generation_protocol,
+    resolved_stop_token_ids,
+    validate_resume_protocol,
+)
 from src.prompts import build_prompt, split_reasoning_and_answer
 from src.quant_utils import fingerprint_gptq_checkpoint, validate_shared_quant_config
 
@@ -141,6 +146,10 @@ def main() -> None:
     )
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
+    generation = config["generation"]
+    stop_token_ids = resolved_stop_token_ids(config, tokenizer)
+    protocol = generation_protocol(config, tokenizer)
+    validate_resume_protocol(read_jsonl(predictions), protocol, predictions)
 
     startup_log = output_dir / "startup.log"
     startup_log_mode = "a" if predictions.exists() and not args.overwrite else "w"
@@ -161,6 +170,7 @@ def main() -> None:
                     enable_chunked_prefill=bool(
                         real_config.get("enable_chunked_prefill", False)
                     ),
+                    enforce_eager=bool(real_config.get("enforce_eager", True)),
                 )
 
     selected_backend = None
@@ -176,18 +186,18 @@ def main() -> None:
             "real_quantization_requested": "gptq_marlin",
             "real_quantization_selected": selected_backend,
             "real_quant_tuple_sha256": manifest["tuple_sha256"],
+            "enforce_eager": bool(real_config.get("enforce_eager", True)),
             "startup_log": str(startup_log),
         },
     )
 
-    generation = config["generation"]
     sampling = SamplingParams(
         temperature=0.0 if generation["deterministic"] else float(generation["temperature"]),
         top_p=float(generation["top_p"]),
         top_k=int(generation["top_k"]),
         seed=int(generation["seed"]),
         max_tokens=int(generation["max_new_tokens"]),
-        stop_token_ids=list(generation.get("stop_token_ids", [])) or None,
+        stop_token_ids=stop_token_ids,
     )
     done = completed_ids(predictions)
     prepared: list[dict[str, Any]] = []
@@ -255,18 +265,16 @@ def main() -> None:
                     "generated_reasoning_token_count": reasoning_count,
                     "reasoning_token_count": reasoning_count,
                     "reasoning_complete": reasoning_complete,
+                    "reasoning_incomplete": (
+                        bool(generation["enable_thinking"])
+                        and not reasoning_complete
+                    ),
                     "reasoning_length_censored": (
                         hit_max_new_tokens and not reasoning_complete
                     ),
                     "hit_max_new_tokens": hit_max_new_tokens,
                     "finish_reason": finish_reason,
-                    "generation_max_new_tokens": int(
-                        generation["max_new_tokens"]
-                    ),
-                    "generation_deterministic": bool(
-                        generation["deterministic"]
-                    ),
-                    "generation_seed": int(generation["seed"]),
+                    **protocol,
                     "total_sequence_length": row["input_token_count"] + len(output_ids),
                     "batch_size_used": len(group),
                     "prefill_latency_seconds": (

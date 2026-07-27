@@ -121,12 +121,25 @@ def answers_equivalent(dataset: str, prediction: str | None, truth: str | None) 
 
 
 def score_record(record: dict[str, Any], dataset: str) -> dict[str, Any]:
-    if record.get("reasoning_length_censored"):
-        # The model never closed </think> before the generation cap, so it did
-        # not produce a valid final-answer segment.
+    thinking_enabled = bool(
+        record.get(
+            "generation_enable_thinking",
+            record.get("reasoning_complete") is not None,
+        )
+    )
+    reasoning_incomplete = thinking_enabled and not bool(
+        record.get("reasoning_complete")
+    )
+    if reasoning_incomplete:
+        # An unclosed thinking segment has no valid final-answer segment,
+        # regardless of whether generation ended by length or EOS.
         predicted = None
     else:
-        final_text = record.get("final_text") or record.get("generated_text", "")
+        final_text = (
+            record.get("final_text", "")
+            if thinking_enabled
+            else record.get("generated_text", "")
+        )
         predicted = extract_answer(dataset, final_text)
     truth = ground_truth_answer(dataset, str(record["ground_truth"]))
     updated = dict(record)
@@ -134,4 +147,5 @@ def score_record(record: dict[str, Any], dataset: str) -> dict[str, Any]:
     updated["normalized_ground_truth"] = truth
     updated["is_correct"] = answers_equivalent(dataset, predicted, truth)
     updated["answer_extraction_failed"] = predicted is None
+    updated["reasoning_incomplete"] = reasoning_incomplete
     return updated

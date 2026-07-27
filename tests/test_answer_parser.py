@@ -28,11 +28,42 @@ def test_censored_reasoning_is_not_scored_from_an_incidental_number():
         "generated_text": "<think>unfinished calculation ending in 42",
         "final_text": "<think>unfinished calculation ending in 42",
         "reasoning_length_censored": True,
+        "reasoning_complete": False,
+        "generation_enable_thinking": True,
     }
     scored = score_record(record, "math500")
     assert scored["final_answer"] is None
     assert not scored["is_correct"]
     assert scored["answer_extraction_failed"]
+
+
+def test_eos_ended_unclosed_reasoning_is_not_scored():
+    record = {
+        "ground_truth": r"\boxed{42}",
+        "generated_text": "<think>unfinished calculation ending in 42",
+        "final_text": "<think>unfinished calculation ending in 42",
+        "reasoning_complete": False,
+        "reasoning_length_censored": False,
+        "generation_enable_thinking": True,
+    }
+    scored = score_record(record, "math500")
+    assert scored["final_answer"] is None
+    assert scored["reasoning_incomplete"]
+    assert not scored["is_correct"]
+
+
+def test_empty_final_segment_does_not_fall_back_to_reasoning():
+    record = {
+        "ground_truth": r"\boxed{42}",
+        "generated_text": "<think>calculation ending in 42</think>",
+        "final_text": "",
+        "reasoning_complete": True,
+        "reasoning_length_censored": False,
+        "generation_enable_thinking": True,
+    }
+    scored = score_record(record, "math500")
+    assert scored["final_answer"] is None
+    assert not scored["is_correct"]
 
 
 def test_gsm8k_gold_calculation_steps_count_annotations_only():

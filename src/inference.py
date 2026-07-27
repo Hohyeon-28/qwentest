@@ -13,22 +13,59 @@ from .metrics import summarize_predictions
 from .prompts import build_prompt, split_reasoning_and_answer
 
 
+def resolved_stop_token_ids(
+    config: dict[str, Any], tokenizer: Any
+) -> list[int]:
+    """Return one canonical ordered stop-token list for every backend."""
+
+    configured = [
+        int(item) for item in config["generation"].get("stop_token_ids", [])
+    ]
+    eos = tokenizer.eos_token_id
+    tokenizer_eos = (
+        []
+        if eos is None
+        else [int(item) for item in eos]
+        if isinstance(eos, (list, tuple))
+        else [int(eos)]
+    )
+    return list(dict.fromkeys([*configured, *tokenizer_eos]))
+
+
+def generation_protocol(
+    config: dict[str, Any], tokenizer: Any
+) -> dict[str, Any]:
+    generation = config["generation"]
+    return {
+        "generation_max_new_tokens": int(generation["max_new_tokens"]),
+        "generation_deterministic": bool(generation["deterministic"]),
+        "generation_seed": int(generation["seed"]),
+        "generation_enable_thinking": bool(generation["enable_thinking"]),
+        "generation_stop_token_ids": resolved_stop_token_ids(config, tokenizer),
+    }
+
+
+def validate_resume_protocol(
+    records: list[dict[str, Any]], expected: dict[str, Any], output: Path
+) -> None:
+    for row in records:
+        observed = {key: row.get(key) for key in expected}
+        if observed != expected:
+            raise RuntimeError(
+                f"Existing results use a different generation protocol: {output}. "
+                "Use a new output_dir or rerun the condition with --overwrite."
+            )
+
+
 def generation_kwargs(config: dict[str, Any], tokenizer: Any) -> dict[str, Any]:
     generation = config["generation"]
+    stop_ids = resolved_stop_token_ids(config, tokenizer)
     kwargs: dict[str, Any] = {
         "max_new_tokens": int(generation["max_new_tokens"]),
         "do_sample": not bool(generation["deterministic"]),
         "pad_token_id": tokenizer.pad_token_id,
-        "eos_token_id": tokenizer.eos_token_id,
+        "eos_token_id": stop_ids,
     }
-    additional_stops = [int(item) for item in generation.get("stop_token_ids", [])]
-    if additional_stops:
-        base_eos = tokenizer.eos_token_id
-        if base_eos is None:
-            base_eos = []
-        elif not isinstance(base_eos, list):
-            base_eos = [base_eos]
-        kwargs["eos_token_id"] = list(dict.fromkeys([*base_eos, *additional_stops]))
     if not generation["deterministic"]:
         kwargs.update(
             {
@@ -112,13 +149,11 @@ def run_hf_generation(
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
     kwargs = generation_kwargs(config, tokenizer)
+    protocol = generation_protocol(config, tokenizer)
+    existing = read_jsonl(output)
+    validate_resume_protocol(existing, protocol, output)
     device = _input_device(model)
-    configured_stops = {int(item) for item in config["generation"].get("stop_token_ids", [])}
-    eos = tokenizer.eos_token_id
-    if isinstance(eos, list):
-        configured_stops.update(int(item) for item in eos)
-    elif eos is not None:
-        configured_stops.add(int(eos))
+    configured_stops = set(protocol["generation_stop_token_ids"])
 
     prepared = []
     for sample in pending:
@@ -183,6 +218,10 @@ def run_hf_generation(
                     "generated_reasoning_token_count": reasoning_count,
                     "reasoning_token_count": reasoning_count,
                     "reasoning_complete": reasoning_complete,
+                    "reasoning_incomplete": (
+                        bool(config["generation"]["enable_thinking"])
+                        and not reasoning_complete
+                    ),
                     "reasoning_length_censored": (
                         hit_max_new_tokens and not reasoning_complete
                     ),
@@ -190,13 +229,7 @@ def run_hf_generation(
                     "finish_reason": (
                         "length" if hit_max_new_tokens else "stop"
                     ),
-                    "generation_max_new_tokens": int(
-                        config["generation"]["max_new_tokens"]
-                    ),
-                    "generation_deterministic": bool(
-                        config["generation"]["deterministic"]
-                    ),
-                    "generation_seed": int(config["generation"]["seed"]),
+                    **protocol,
                     "total_sequence_length": row["input_token_count"] + len(new_ids),
                     "batch_size_used": len(group),
                     "prefill_latency_seconds": None,

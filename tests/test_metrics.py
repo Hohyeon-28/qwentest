@@ -13,6 +13,9 @@ def comparison(index: int) -> dict:
         "sample_id": f"sample-{index}",
         "bf16_reasoning_tokens": index * 100,
         "bf16_reasoning_length_censored": False,
+        "bf16_reasoning_incomplete": False,
+        "fake_reasoning_incomplete": False,
+        "real_reasoning_incomplete": False,
         "bf16_correct": index % 2 == 0,
         "fake_correct": index % 3 != 0,
         "real_correct": index % 4 != 0,
@@ -30,9 +33,21 @@ def test_length_quantiles_are_balanced_and_ordered():
 def test_censored_rows_are_excluded_from_quantiles_and_trend():
     records = [comparison(index) for index in range(1, 11)]
     records[-1]["bf16_reasoning_length_censored"] = True
+    records[-1]["bf16_reasoning_incomplete"] = True
     rows = length_quantile_rows(records, 3)
     assert sum(row["samples"] for row in rows) == 9
     trend = length_trend_statistics(records, trials=100, seed=7)
+    assert trend["samples"] == 9
+
+
+def test_all_complete_sensitivity_excludes_any_incomplete_condition():
+    records = [comparison(index) for index in range(1, 11)]
+    records[-1]["real_reasoning_incomplete"] = True
+    rows = length_quantile_rows(records, 3, require_all_complete=True)
+    assert sum(row["samples"] for row in rows) == 9
+    trend = length_trend_statistics(
+        records, trials=100, seed=7, require_all_complete=True
+    )
     assert trend["samples"] == 9
 
 
@@ -53,6 +68,8 @@ def test_summary_reports_censoring_and_completed_average():
             "answer_extraction_failed": False,
             "hit_max_new_tokens": False,
             "reasoning_length_censored": False,
+            "reasoning_complete": True,
+            "reasoning_incomplete": False,
         },
         {
             "is_correct": False,
@@ -62,10 +79,13 @@ def test_summary_reports_censoring_and_completed_average():
             "answer_extraction_failed": True,
             "hit_max_new_tokens": True,
             "reasoning_length_censored": True,
+            "reasoning_complete": False,
+            "reasoning_incomplete": True,
         },
     ]
     summary = summarize_predictions(records)
     assert summary["max_token_truncations"] == 1
     assert summary["reasoning_length_censored"] == 1
+    assert summary["reasoning_incomplete"] == 1
     assert summary["completed_reasoning_traces"] == 1
     assert summary["avg_completed_reasoning_tokens"] == 6

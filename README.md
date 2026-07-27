@@ -194,7 +194,10 @@ VENV_DIR=qwen bash scripts/run_cuda118_parallel.sh math500 6 7
 현재 기본 protocol은 복잡한 수학 reasoning을 위한 38,912-token 출력 예산과
 40,960-token 전체 context를 사용합니다. 실행 전에 `preflight.json`을 만들고
 실제 dataset의 최대 prompt 길이가 context 예산 안에 들어가는지 검사합니다.
-기존 4K 결과는 건드리지 않고 새 결과를 `results_39k/`에 저장합니다.
+기존 4K 및 이전 39K 부분 결과는 건드리지 않고 새 결과를
+`results_39k_v2/`에 저장합니다. Real은 CUDA graph/TorchDynamo 경로에서
+발생했던 구형 CUDA 11.8 호환성 문제를 피하기 위해 eager 실행을 강제하지만,
+weight kernel은 계속 `gptq_marlin`을 사용합니다.
 
 두 worker가 끝나면 `validate_results.py`가 다음 조건을 fail-closed로 검사합니다.
 
@@ -203,10 +206,11 @@ VENV_DIR=qwen bash scripts/run_cuda118_parallel.sh math500 6 7
 3. Fake/Real의 source checkpoint와 `(q,s,z,g)` fingerprint가 동일함
 4. 두 quantization manifest가 byte 단위로 동일함
 5. Real backend가 실제 `gptq_marlin`임
-6. `</think>` 미완료 right-censored 비율이 조건별 1% 이하임
+6. EOS 또는 길이 상한으로 `</think>`가 미완료된 비율이 조건별 1% 이하임
+7. HF와 vLLM의 thinking, seed, 길이 상한, stop-token 목록이 동일함
 
 검증에 실패하면 비교표와 plot을 만들지 않습니다. 최종 검증 결과는
-`results_39k/<dataset>/validation.json`에 저장합니다.
+`results_39k_v2/<dataset>/validation.json`에 저장합니다.
 
 다른 데이터셋이나 GPU를 지정할 수도 있습니다.
 
@@ -226,9 +230,11 @@ L_i,m^gen = 모델 m이 실제 생성한 reasoning token 수
 - `L_i,m^gen`은 `</think>` 이전 실제 생성 token 수이며
   `generated_reasoning_token_count`에 저장합니다.
 - 출력 상한 전에 `</think>`가 나오지 않으면 길이를 0으로 기록하지 않습니다.
-  관찰된 token 수를 보존하고 `reasoning_length_censored=true`로 표시합니다.
-  이 표본은 정확한 길이 bucket과 길이 분포에서는 제외되고, 별도 censored
-  행과 completion-rate 통계로 보고됩니다.
+  관찰된 token 수를 보존합니다. 상한에 도달한 경우
+  `reasoning_length_censored=true`, EOS로 먼저 끝난 경우도 포함한 모든
+  미완성 reasoning은 `reasoning_incomplete=true`로 표시합니다. 미완성 표본은
+  정확한 길이 bucket과 길이 분포에서 제외하고 별도 completion 통계로
+  보고합니다.
 - MATH-500은 동일한 annotation 규약이 없어 `S_i^gold=null`입니다.
 
 BF16 reasoning 길이를 공통 bucket으로 사용하는 분석과 각 모델 자체 생성 길이
@@ -237,6 +243,8 @@ bucket 분석을 모두 만듭니다. GSM8K에서는 gold-step별 정확도와 �
 
 고정 길이 bucket 외에 BF16의 완료된 reasoning trace를 5개 동일표본 분위수로
 나눈 `length_quantile.csv`를 primary length analysis로 생성합니다. 또한
+세 조건 모두 reasoning을 완료한 표본만 쓰는
+`length_quantile_all_complete.csv`를 sensitivity analysis로 함께 생성합니다.
 `log1p(BF16 reasoning length)`와 Fake/Real answer disagreement 및 조건별 실패
 사이의 point-biserial correlation을 10,000회 permutation test로 검정합니다.
 사전 지정 primary outcome은 `fake_real_answer_disagreement`이며, 보조 outcome의
@@ -263,7 +271,7 @@ truncated-union 근사 KL, reference-token logprob 차이를 계산합니다.
 ## 출력
 
 ```text
-results_39k/<dataset>/
+results_39k_v2/<dataset>/
 ├── preflight.json
 ├── validation.json
 ├── bf16/
@@ -290,6 +298,7 @@ results_39k/<dataset>/
 │   ├── length_bucket.csv
 │   ├── length_bucket_own.csv
 │   ├── length_quantile.csv
+│   ├── length_quantile_all_complete.csv
 │   ├── accuracy_by_gold_steps.csv
 │   ├── error_cases.jsonl
 │   └── summary.json

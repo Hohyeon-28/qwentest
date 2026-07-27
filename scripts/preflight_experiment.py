@@ -95,6 +95,19 @@ def main() -> None:
         )
     if int(config["generation"]["batch_size"]) != 1:
         errors.append("The validated 39K protocol requires generation.batch_size=1")
+    stop_token_ids = [
+        int(item) for item in config["generation"].get("stop_token_ids", [])
+    ]
+    expected_qwen_stops = [151645, 151643]
+    if stop_token_ids != expected_qwen_stops:
+        errors.append(
+            "The validated Qwen3 protocol requires ordered stop_token_ids "
+            f"{expected_qwen_stops}, found {stop_token_ids}"
+        )
+    if not bool(config["quantization"]["real"].get("enforce_eager", False)):
+        errors.append(
+            "The validated CUDA 11.8 protocol requires real.enforce_eager=true"
+        )
 
     report = {
         "valid": not errors,
@@ -107,6 +120,10 @@ def main() -> None:
         "bf16_model_context_limit": base_context,
         "gptq_model_context_limit": real_context,
         "configured_real_max_model_len": configured_real_context,
+        "stop_token_ids": stop_token_ids,
+        "real_enforce_eager": bool(
+            config["quantization"]["real"].get("enforce_eager", False)
+        ),
         "errors": errors,
     }
     target = results_root(config, args.dataset) / "preflight.json"

@@ -52,8 +52,10 @@ def validate(config: dict[str, Any], dataset: str) -> dict[str, Any]:
         missing = sorted(expected_ids - set(ids))
         unexpected = sorted(set(ids) - expected_ids)
         censored = sum(bool(row.get("reasoning_length_censored")) for row in rows)
+        incomplete = sum(bool(row.get("reasoning_incomplete")) for row in rows)
         capped = sum(bool(row.get("hit_max_new_tokens")) for row in rows)
         fraction = censored / len(rows) if rows else 1.0
+        incomplete_fraction = incomplete / len(rows) if rows else 1.0
         condition_report[condition] = {
             "samples": len(rows),
             "unique_sample_ids": len(set(ids)),
@@ -63,6 +65,8 @@ def validate(config: dict[str, Any], dataset: str) -> dict[str, Any]:
             "max_token_truncations": capped,
             "reasoning_length_censored": censored,
             "reasoning_length_censored_fraction": fraction,
+            "reasoning_incomplete": incomplete,
+            "reasoning_incomplete_fraction": incomplete_fraction,
         }
         if len(rows) != len(expected_samples):
             _fail(
@@ -83,6 +87,8 @@ def validate(config: dict[str, Any], dataset: str) -> dict[str, Any]:
                 row.get("generation_max_new_tokens"),
                 row.get("generation_deterministic"),
                 row.get("generation_seed"),
+                row.get("generation_enable_thinking"),
+                tuple(row.get("generation_stop_token_ids") or []),
             )
             for row in rows
         }
@@ -91,6 +97,13 @@ def validate(config: dict[str, Any], dataset: str) -> dict[str, Any]:
                 configured_max,
                 bool(config["generation"]["deterministic"]),
                 int(config["generation"]["seed"]),
+                bool(config["generation"]["enable_thinking"]),
+                tuple(
+                    dict.fromkeys(
+                        int(item)
+                        for item in config["generation"].get("stop_token_ids", [])
+                    )
+                ),
             )
         }
         if protocol_values != expected_protocol:
@@ -113,11 +126,23 @@ def validate(config: dict[str, Any], dataset: str) -> dict[str, Any]:
         allowed_fraction = float(
             config["evaluation"].get("max_reasoning_censored_fraction", 0.0)
         )
+        allowed_incomplete_fraction = float(
+            config["evaluation"].get(
+                "max_reasoning_incomplete_fraction", allowed_fraction
+            )
+        )
         if fraction > allowed_fraction:
             _fail(
                 errors,
                 f"{condition}: reasoning censoring {fraction:.2%} exceeds "
                 f"configured maximum {allowed_fraction:.2%}",
+            )
+        if incomplete_fraction > allowed_incomplete_fraction:
+            _fail(
+                errors,
+                f"{condition}: incomplete reasoning {incomplete_fraction:.2%} "
+                "exceeds configured maximum "
+                f"{allowed_incomplete_fraction:.2%}",
             )
 
         saved_config_path = root / condition / "config.json"

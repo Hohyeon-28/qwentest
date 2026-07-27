@@ -42,6 +42,7 @@ echo "[config] dataset=${DATASET}"
 echo "[config] BF16 physical GPU=${BF16_GPU}"
 echo "[config] Fake/Real physical GPU=${QUANT_GPU}"
 echo "[config] config=${CONFIG}"
+echo "[config] vLLM V0 + spawn + eager execution (CUDA graph disabled)"
 
 python scripts/preflight_experiment.py \
   --config "${CONFIG}" \
@@ -66,6 +67,7 @@ BF16_PID=$!
   export VLLM_WORKER_MULTIPROC_METHOD="${VLLM_WORKER_MULTIPROC_METHOD:-spawn}"
   export VLLM_USE_V1="${VLLM_USE_V1:-0}"
   export TORCHDYNAMO_DISABLE="${TORCHDYNAMO_DISABLE:-1}"
+  export TORCH_COMPILE_DISABLE="${TORCH_COMPILE_DISABLE:-1}"
   export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
   run_logged fake_quant \
     python scripts/run_fake_quant.py \

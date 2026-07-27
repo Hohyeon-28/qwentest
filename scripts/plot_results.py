@@ -135,7 +135,7 @@ def main() -> None:
         lengths = [
             int(row.get("reasoning_token_count") or 0)
             for row in records
-            if not row.get("reasoning_length_censored")
+            if not row.get("reasoning_incomplete")
         ]
         ax.hist(
             lengths,
@@ -146,7 +146,7 @@ def main() -> None:
         )
     ax.set_xlabel("Reasoning tokens")
     ax.set_ylabel("Samples")
-    ax.set_title("Completed reasoning traces; max-token-censored traces excluded")
+    ax.set_title("Completed reasoning traces; incomplete traces excluded")
     ax.legend()
     _save(fig, output / "token_length_distribution.png")
 

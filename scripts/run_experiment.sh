@@ -24,11 +24,13 @@ export CUDA_VISIBLE_DEVICES="${GPU_ID}"
 export VLLM_WORKER_MULTIPROC_METHOD="${VLLM_WORKER_MULTIPROC_METHOD:-spawn}"
 export VLLM_USE_V1="${VLLM_USE_V1:-0}"
 export TORCHDYNAMO_DISABLE="${TORCHDYNAMO_DISABLE:-1}"
+export TORCH_COMPILE_DISABLE="${TORCH_COMPILE_DISABLE:-1}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 echo "[config] dataset=${DATASET}"
 echo "[config] physical GPU=${GPU_ID} (visible inside Python as cuda:0)"
 echo "[config] config=${CONFIG}"
+echo "[config] vLLM V0 + spawn + eager execution (CUDA graph disabled)"
 
 python scripts/preflight_experiment.py \
   --config "${CONFIG}" \

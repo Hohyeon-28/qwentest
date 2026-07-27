@@ -84,11 +84,20 @@ def length_trend_statistics(
     *,
     trials: int,
     seed: int,
+    require_all_complete: bool = False,
 ) -> dict[str, Any]:
     eligible = [
         row
         for row in comparisons
-        if not row.get("bf16_reasoning_length_censored")
+        if not row.get("bf16_reasoning_incomplete")
+        and (
+            not require_all_complete
+            or not (
+                row.get("bf16_reasoning_incomplete")
+                or row.get("fake_reasoning_incomplete")
+                or row.get("real_reasoning_incomplete")
+            )
+        )
     ]
     log_lengths = [math.log1p(row["bf16_reasoning_tokens"]) for row in eligible]
     outcomes = {
@@ -110,6 +119,7 @@ def length_trend_statistics(
     }
     result: dict[str, Any] = {
         "reference_length": "log1p(BF16 completed reasoning tokens)",
+        "requires_all_conditions_complete": require_all_complete,
         "samples": len(eligible),
         "permutation_trials": trials,
         "interpretation": (
@@ -161,6 +171,7 @@ def summarize_predictions(records: list[dict[str, Any]]) -> dict[str, Any]:
             "answer_extraction_failures": 0,
             "max_token_truncations": 0,
             "reasoning_length_censored": 0,
+            "reasoning_incomplete": 0,
             "completed_reasoning_traces": 0,
             "avg_completed_reasoning_tokens": None,
         }
@@ -171,7 +182,7 @@ def summarize_predictions(records: list[dict[str, Any]]) -> dict[str, Any]:
     completed_reasoning_counts = [
         int(record.get("reasoning_token_count") or 0)
         for record in records
-        if not record.get("reasoning_length_censored")
+        if bool(record.get("reasoning_complete"))
     ]
     generation_counts = [int(record.get("generated_token_count") or 0) for record in records]
     return {
@@ -191,6 +202,9 @@ def summarize_predictions(records: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         "reasoning_length_censored": sum(
             bool(record.get("reasoning_length_censored")) for record in records
+        ),
+        "reasoning_incomplete": sum(
+            bool(record.get("reasoning_incomplete")) for record in records
         ),
         "completed_reasoning_traces": len(completed_reasoning_counts),
         "avg_completed_reasoning_tokens": (
@@ -297,9 +311,12 @@ def compare_conditions(
                 "real_reasoning_length_censored": bool(
                     r.get("reasoning_length_censored")
                 ),
+                "bf16_reasoning_incomplete": bool(b.get("reasoning_incomplete")),
+                "fake_reasoning_incomplete": bool(f.get("reasoning_incomplete")),
+                "real_reasoning_incomplete": bool(r.get("reasoning_incomplete")),
                 "bf16_length_bucket": (
                     None
-                    if b.get("reasoning_length_censored")
+                    if b.get("reasoning_incomplete")
                     else bucket_label(
                         int(b.get("reasoning_token_count") or 0), boundaries
                     )
@@ -353,6 +370,12 @@ def compare_conditions(
         trials=permutation_trials,
         seed=permutation_seed,
     )
+    all_complete_length_trend = length_trend_statistics(
+        comparisons,
+        trials=permutation_trials,
+        seed=permutation_seed,
+        require_all_complete=True,
+    )
     if primary_length_outcome not in length_trend["outcomes"]:
         raise ValueError(
             f"Unknown primary length outcome: {primary_length_outcome}"
@@ -376,6 +399,7 @@ def compare_conditions(
         "contingency": dict(counts),
         "paired_accuracy_tests": paired_accuracy_tests,
         "bf16_length_trend": length_trend,
+        "bf16_length_trend_all_conditions_complete": all_complete_length_trend,
         "length_variables": {
             "S_i_gold": {
                 "field": "gold_calculation_step_count",
@@ -462,13 +486,24 @@ def length_bucket_rows(
 
 
 def length_quantile_rows(
-    comparisons: list[dict[str, Any]], bins: int
+    comparisons: list[dict[str, Any]],
+    bins: int,
+    *,
+    require_all_complete: bool = False,
 ) -> list[dict[str, Any]]:
     eligible = sorted(
         (
             row
             for row in comparisons
-            if not row.get("bf16_reasoning_length_censored")
+            if not row.get("bf16_reasoning_incomplete")
+            and (
+                not require_all_complete
+                or not (
+                    row.get("bf16_reasoning_incomplete")
+                    or row.get("fake_reasoning_incomplete")
+                    or row.get("real_reasoning_incomplete")
+                )
+            )
         ),
         key=lambda row: (row["bf16_reasoning_tokens"], row["sample_id"]),
     )

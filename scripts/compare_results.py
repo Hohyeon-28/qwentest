@@ -51,7 +51,7 @@ def own_length_rows(
             selected = [
                 row
                 for row in records
-                if not row.get("reasoning_length_censored")
+                if not row.get("reasoning_incomplete")
                 and bucket_label(
                     int(row.get("reasoning_token_count") or 0), boundaries
                 )
@@ -70,12 +70,12 @@ def own_length_rows(
                 }
             )
         censored = [
-            row for row in records if row.get("reasoning_length_censored")
+            row for row in records if row.get("reasoning_incomplete")
         ]
         rows.append(
             {
                 "condition": condition,
-                "own_reasoning_length": "censored_at_max_tokens",
+                "own_reasoning_length": "incomplete_reasoning",
                 "samples": len(censored),
                 "accuracy": (
                     sum(bool(row.get("is_correct")) for row in censored)
@@ -126,6 +126,14 @@ def main() -> None:
         length_quantile_rows(
             comparisons,
             int(config["evaluation"].get("length_quantile_bins", 5)),
+        ),
+    )
+    write_csv(
+        output / "length_quantile_all_complete.csv",
+        length_quantile_rows(
+            comparisons,
+            int(config["evaluation"].get("length_quantile_bins", 5)),
+            require_all_complete=True,
         ),
     )
     if args.dataset == "gsm8k":
