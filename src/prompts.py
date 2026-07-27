@@ -32,7 +32,7 @@ def build_prompt(tokenizer: Any, question: str, enable_thinking: bool) -> dict[s
 
 def split_reasoning_and_answer(
     tokenizer: Any, generated_ids: list[int]
-) -> tuple[str, str, int]:
+) -> tuple[str, str, int, bool]:
     close_id = tokenizer.convert_tokens_to_ids("</think>")
     try:
         close_position = generated_ids.index(close_id)
@@ -41,11 +41,19 @@ def split_reasoning_and_answer(
         if "</think>" in full:
             reasoning, answer = full.split("</think>", maxsplit=1)
             reasoning = reasoning.replace("<think>", "", 1).strip()
-            return reasoning, answer.strip(), len(tokenizer.encode(reasoning, add_special_tokens=False))
-        return "", full, 0
+            return (
+                reasoning,
+                answer.strip(),
+                len(tokenizer.encode(reasoning, add_special_tokens=False)),
+                True,
+            )
+        # An unclosed <think> is a right-censored reasoning trace, not a
+        # zero-length trace. Keep its observed length and mark it incomplete.
+        reasoning = full.replace("<think>", "", 1).strip()
+        return reasoning, full, len(generated_ids), False
 
     reasoning_ids = generated_ids[:close_position]
     final_ids = generated_ids[close_position + 1 :]
     reasoning = tokenizer.decode(reasoning_ids, skip_special_tokens=True).strip()
     final = tokenizer.decode(final_ids, skip_special_tokens=True).strip()
-    return reasoning, final, len(reasoning_ids)
+    return reasoning, final, len(reasoning_ids), True

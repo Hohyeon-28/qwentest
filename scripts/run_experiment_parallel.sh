@@ -10,7 +10,12 @@ BF16_GPU="${2:-6}"
 QUANT_GPU="${3:-7}"
 CONFIG="${CONFIG:-configs/experiment.yaml}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.9}"
-LOG_DIR="results/${DATASET}/runner_logs"
+OUTPUT_ROOT="$(
+  python -c \
+    'import sys; from src.config import load_config; print(load_config(sys.argv[1])["experiment"]["output_dir"])' \
+    "${CONFIG}"
+)"
+LOG_DIR="${OUTPUT_ROOT}/${DATASET}/runner_logs"
 
 if [[ "${DATASET}" != "gsm8k" && "${DATASET}" != "math500" ]]; then
   echo "Usage: bash scripts/run_experiment_parallel.sh [gsm8k|math500] [bf16_gpu] [quant_gpu]" >&2
@@ -38,6 +43,10 @@ echo "[config] BF16 physical GPU=${BF16_GPU}"
 echo "[config] Fake/Real physical GPU=${QUANT_GPU}"
 echo "[config] config=${CONFIG}"
 
+python scripts/preflight_experiment.py \
+  --config "${CONFIG}" \
+  --dataset "${DATASET}"
+
 # Verify the shared (q,s,z,g) checkpoint before launching either worker.
 python scripts/prepare_fake_quant.py \
   --config "${CONFIG}" \
@@ -54,6 +63,10 @@ BF16_PID=$!
 
 (
   export CUDA_VISIBLE_DEVICES="${QUANT_GPU}"
+  export VLLM_WORKER_MULTIPROC_METHOD="${VLLM_WORKER_MULTIPROC_METHOD:-spawn}"
+  export VLLM_USE_V1="${VLLM_USE_V1:-0}"
+  export TORCHDYNAMO_DISABLE="${TORCHDYNAMO_DISABLE:-1}"
+  export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
   run_logged fake_quant \
     python scripts/run_fake_quant.py \
       --config "${CONFIG}" \
@@ -85,6 +98,10 @@ python scripts/evaluate_answers.py \
   --dataset "${DATASET}" \
   --all
 
+python scripts/validate_results.py \
+  --config "${CONFIG}" \
+  --dataset "${DATASET}"
+
 python scripts/compare_results.py \
   --config "${CONFIG}" \
   --dataset "${DATASET}"
@@ -93,4 +110,4 @@ python scripts/plot_results.py \
   --config "${CONFIG}" \
   --dataset "${DATASET}"
 
-echo "[done] results are under results/${DATASET}/"
+echo "[done] results are under ${OUTPUT_ROOT}/${DATASET}/"

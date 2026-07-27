@@ -16,6 +16,7 @@ from src.metrics import (
     compare_conditions,
     gold_step_rows,
     length_bucket_rows,
+    length_quantile_rows,
 )
 
 
@@ -50,7 +51,10 @@ def own_length_rows(
             selected = [
                 row
                 for row in records
-                if bucket_label(int(row.get("reasoning_token_count") or 0), boundaries)
+                if not row.get("reasoning_length_censored")
+                and bucket_label(
+                    int(row.get("reasoning_token_count") or 0), boundaries
+                )
                 == label
             ]
             rows.append(
@@ -65,6 +69,22 @@ def own_length_rows(
                     ),
                 }
             )
+        censored = [
+            row for row in records if row.get("reasoning_length_censored")
+        ]
+        rows.append(
+            {
+                "condition": condition,
+                "own_reasoning_length": "censored_at_max_tokens",
+                "samples": len(censored),
+                "accuracy": (
+                    sum(bool(row.get("is_correct")) for row in censored)
+                    / len(censored)
+                    if censored
+                    else None
+                ),
+            }
+        )
     return rows
 
 
@@ -88,11 +108,26 @@ def main() -> None:
         conditions["fake_quant"],
         conditions["real_quant_marlin"],
         boundaries,
+        permutation_trials=int(config["evaluation"].get("permutation_trials", 10000)),
+        permutation_seed=int(config["generation"]["seed"]),
+        primary_length_outcome=str(
+            config["evaluation"].get(
+                "primary_length_outcome",
+                "fake_real_answer_disagreement",
+            )
+        ),
     )
     output = root / "comparisons"
     write_jsonl(output / "sample_comparison.jsonl", comparisons)
     write_jsonl(output / "error_cases.jsonl", errors)
     write_csv(output / "length_bucket.csv", length_bucket_rows(comparisons, boundaries))
+    write_csv(
+        output / "length_quantile.csv",
+        length_quantile_rows(
+            comparisons,
+            int(config["evaluation"].get("length_quantile_bins", 5)),
+        ),
+    )
     if args.dataset == "gsm8k":
         write_csv(output / "accuracy_by_gold_steps.csv", gold_step_rows(comparisons))
     write_csv(

@@ -159,8 +159,15 @@ def run_hf_generation(
             for row, output_ids in zip(group, generated):
                 new_ids = [int(item) for item in output_ids[prompt_width:].tolist()]
                 new_ids = _trim_after_first_stop(new_ids, configured_stops)
-                reasoning, final_text, reasoning_count = split_reasoning_and_answer(
-                    tokenizer, new_ids
+                (
+                    reasoning,
+                    final_text,
+                    reasoning_count,
+                    reasoning_complete,
+                ) = split_reasoning_and_answer(tokenizer, new_ids)
+                hit_max_new_tokens = (
+                    len(new_ids) >= int(config["generation"]["max_new_tokens"])
+                    and (not new_ids or new_ids[-1] not in configured_stops)
                 )
                 generated_text = tokenizer.decode(new_ids, skip_special_tokens=True).strip()
                 record = {
@@ -175,6 +182,21 @@ def run_hf_generation(
                     # L_i,m^gen: model m's actually generated reasoning-token count.
                     "generated_reasoning_token_count": reasoning_count,
                     "reasoning_token_count": reasoning_count,
+                    "reasoning_complete": reasoning_complete,
+                    "reasoning_length_censored": (
+                        hit_max_new_tokens and not reasoning_complete
+                    ),
+                    "hit_max_new_tokens": hit_max_new_tokens,
+                    "finish_reason": (
+                        "length" if hit_max_new_tokens else "stop"
+                    ),
+                    "generation_max_new_tokens": int(
+                        config["generation"]["max_new_tokens"]
+                    ),
+                    "generation_deterministic": bool(
+                        config["generation"]["deterministic"]
+                    ),
+                    "generation_seed": int(config["generation"]["seed"]),
                     "total_sequence_length": row["input_token_count"] + len(new_ids),
                     "batch_size_used": len(group),
                     "prefill_latency_seconds": None,

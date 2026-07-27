@@ -143,7 +143,8 @@ def main() -> None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
     startup_log = output_dir / "startup.log"
-    with startup_log.open("a", encoding="utf-8") as log_handle:
+    startup_log_mode = "a" if predictions.exists() and not args.overwrite else "w"
+    with startup_log.open(startup_log_mode, encoding="utf-8") as log_handle:
         with contextlib.redirect_stdout(Tee(sys.stdout, log_handle)):
             with contextlib.redirect_stderr(Tee(sys.stderr, log_handle)):
                 llm = LLM(
@@ -156,7 +157,7 @@ def main() -> None:
                     trust_remote_code=bool(config["models"]["trust_remote_code"]),
                     tensor_parallel_size=args.tensor_parallel_size,
                     gpu_memory_utilization=args.gpu_memory_utilization,
-                    max_model_len=int(real_config.get("max_model_len", 8192)),
+                    max_model_len=int(real_config["max_model_len"]),
                     enable_chunked_prefill=bool(
                         real_config.get("enable_chunked_prefill", False)
                     ),
@@ -222,9 +223,14 @@ def main() -> None:
             for row, request_output in zip(group, outputs):
                 completion = request_output.outputs[0]
                 output_ids = [int(item) for item in completion.token_ids]
-                reasoning, final_text, reasoning_count = split_reasoning_and_answer(
-                    tokenizer, output_ids
-                )
+                (
+                    reasoning,
+                    final_text,
+                    reasoning_count,
+                    reasoning_complete,
+                ) = split_reasoning_and_answer(tokenizer, output_ids)
+                finish_reason = getattr(completion, "finish_reason", None)
+                hit_max_new_tokens = finish_reason == "length"
                 metrics = getattr(request_output, "metrics", None)
                 arrival = _metric(metrics, "arrival_time")
                 first = _metric(metrics, "first_token_time")
@@ -248,6 +254,19 @@ def main() -> None:
                     # L_i,m^gen: model m's actually generated reasoning-token count.
                     "generated_reasoning_token_count": reasoning_count,
                     "reasoning_token_count": reasoning_count,
+                    "reasoning_complete": reasoning_complete,
+                    "reasoning_length_censored": (
+                        hit_max_new_tokens and not reasoning_complete
+                    ),
+                    "hit_max_new_tokens": hit_max_new_tokens,
+                    "finish_reason": finish_reason,
+                    "generation_max_new_tokens": int(
+                        generation["max_new_tokens"]
+                    ),
+                    "generation_deterministic": bool(
+                        generation["deterministic"]
+                    ),
+                    "generation_seed": int(generation["seed"]),
                     "total_sequence_length": row["input_token_count"] + len(output_ids),
                     "batch_size_used": len(group),
                     "prefill_latency_seconds": (

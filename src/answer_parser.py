@@ -121,8 +121,13 @@ def answers_equivalent(dataset: str, prediction: str | None, truth: str | None) 
 
 
 def score_record(record: dict[str, Any], dataset: str) -> dict[str, Any]:
-    final_text = record.get("final_text") or record.get("generated_text", "")
-    predicted = extract_answer(dataset, final_text)
+    if record.get("reasoning_length_censored"):
+        # The model never closed </think> before the generation cap, so it did
+        # not produce a valid final-answer segment.
+        predicted = None
+    else:
+        final_text = record.get("final_text") or record.get("generated_text", "")
+        predicted = extract_answer(dataset, final_text)
     truth = ground_truth_answer(dataset, str(record["ground_truth"]))
     updated = dict(record)
     updated["final_answer"] = predicted

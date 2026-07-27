@@ -188,13 +188,30 @@ Fake와 Real은 GPU 7에서 순차 실행되며, 두 worker가 끝난 뒤 평가
 생성합니다.
 
 ```bash
-bash scripts/run_experiment_parallel.sh
+VENV_DIR=qwen bash scripts/run_cuda118_parallel.sh math500 6 7
 ```
+
+현재 기본 protocol은 복잡한 수학 reasoning을 위한 38,912-token 출력 예산과
+40,960-token 전체 context를 사용합니다. 실행 전에 `preflight.json`을 만들고
+실제 dataset의 최대 prompt 길이가 context 예산 안에 들어가는지 검사합니다.
+기존 4K 결과는 건드리지 않고 새 결과를 `results_39k/`에 저장합니다.
+
+두 worker가 끝나면 `validate_results.py`가 다음 조건을 fail-closed로 검사합니다.
+
+1. 세 조건의 전체 sample 수와 sample ID가 동일함
+2. question, ground truth, prompt token hash가 동일함
+3. Fake/Real의 source checkpoint와 `(q,s,z,g)` fingerprint가 동일함
+4. 두 quantization manifest가 byte 단위로 동일함
+5. Real backend가 실제 `gptq_marlin`임
+6. `</think>` 미완료 right-censored 비율이 조건별 1% 이하임
+
+검증에 실패하면 비교표와 plot을 만들지 않습니다. 최종 검증 결과는
+`results_39k/<dataset>/validation.json`에 저장합니다.
 
 다른 데이터셋이나 GPU를 지정할 수도 있습니다.
 
 ```bash
-bash scripts/run_experiment_parallel.sh gsm8k 6 7
+VENV_DIR=qwen bash scripts/run_cuda118_parallel.sh gsm8k 6 7
 ```
 
 ## 두 종류의 풀이 길이
@@ -208,11 +225,23 @@ L_i,m^gen = 모델 m이 실제 생성한 reasoning token 수
   개수이며 `gold_calculation_step_count`에 저장합니다.
 - `L_i,m^gen`은 `</think>` 이전 실제 생성 token 수이며
   `generated_reasoning_token_count`에 저장합니다.
+- 출력 상한 전에 `</think>`가 나오지 않으면 길이를 0으로 기록하지 않습니다.
+  관찰된 token 수를 보존하고 `reasoning_length_censored=true`로 표시합니다.
+  이 표본은 정확한 길이 bucket과 길이 분포에서는 제외되고, 별도 censored
+  행과 completion-rate 통계로 보고됩니다.
 - MATH-500은 동일한 annotation 규약이 없어 `S_i^gold=null`입니다.
 
 BF16 reasoning 길이를 공통 bucket으로 사용하는 분석과 각 모델 자체 생성 길이
 bucket 분석을 모두 만듭니다. GSM8K에서는 gold-step별 정확도와 평균
 `L_i,m^gen`도 추가로 계산합니다.
+
+고정 길이 bucket 외에 BF16의 완료된 reasoning trace를 5개 동일표본 분위수로
+나눈 `length_quantile.csv`를 primary length analysis로 생성합니다. 또한
+`log1p(BF16 reasoning length)`와 Fake/Real answer disagreement 및 조건별 실패
+사이의 point-biserial correlation을 10,000회 permutation test로 검정합니다.
+사전 지정 primary outcome은 `fake_real_answer_disagreement`이며, 보조 outcome의
+다중 검정에는 Holm 보정을 함께 보고합니다. 이는 길이와 오류의 연관성 분석이며
+인과효과로 해석하지 않습니다.
 
 ## Teacher-forced logprob 비교
 
@@ -234,7 +263,9 @@ truncated-union 근사 KL, reference-token logprob 차이를 계산합니다.
 ## 출력
 
 ```text
-results/<dataset>/
+results_39k/<dataset>/
+├── preflight.json
+├── validation.json
 ├── bf16/
 │   ├── config.json
 │   ├── environment.json
@@ -258,13 +289,16 @@ results/<dataset>/
 │   ├── sample_comparison.jsonl
 │   ├── length_bucket.csv
 │   ├── length_bucket_own.csv
+│   ├── length_quantile.csv
 │   ├── accuracy_by_gold_steps.csv
 │   ├── error_cases.jsonl
 │   └── summary.json
 └── plots/
     ├── accuracy_by_precision.png
     ├── accuracy_drop_by_length.png
+    ├── accuracy_drop_by_length_quantile.png
     ├── agreement_by_length.png
+    ├── agreement_by_length_quantile.png
     ├── latency_by_precision.png
     ├── token_length_distribution.png
     ├── accuracy_by_gold_steps.png
@@ -275,6 +309,9 @@ results/<dataset>/
 
 - Qwen3 공식 권고는 thinking mode에서 greedy decoding을 피하는 것이지만,
   본 실험은 backend 간 결정론적 비교를 위해 명세대로 greedy를 기본 사용합니다.
+- greedy 반복이 38,912-token 상한까지 이어질 가능성을 숨기지 않습니다.
+  미완료 trace는 right-censored로 기록하며 조건별 1%를 넘으면 전체 비교를
+  실패 처리합니다.
 - Fake latency는 dense BF16 GEMM이므로 Real INT4 kernel의 속도 비교 대상으로
   해석하지 않습니다.
 - shared tuple이 동일해도 HF dense runtime과 vLLM runtime에는 attention kernel,

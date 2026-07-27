@@ -1,7 +1,8 @@
 experiment:
-  name: qwen3_8b_int4_cot
+  name: qwen3_8b_int4_cot_39k
   seed: 20250724
-  output_dir: results
+  # Keep the original 4K run intact.
+  output_dir: results_39k
 
 models:
   # BF16 baseline only.
@@ -34,13 +35,16 @@ quantization:
     symmetric: true
     desc_act: false
     backend: gptq_marlin
-    max_model_len: 8192
+    # Qwen3's default 40,960-token allocation accommodates the 38,912-token
+    # complex-reasoning output budget plus the observed <=799-token prompts.
+    max_model_len: 40960
     enable_chunked_prefill: false
     source: models.real_gptq
 
 generation:
   enable_thinking: true
-  max_new_tokens: 4096
+  # Qwen recommends 38,912 output tokens for complex math/code benchmarks.
+  max_new_tokens: 38912
   deterministic: true
   temperature: 0.0
   top_p: 1.0
@@ -62,7 +66,15 @@ datasets:
     max_samples: null
 
 evaluation:
-  length_buckets: [0, 129, 257, 513, 1025]
+  # Fixed bins remain useful for absolute-length reporting. Balanced BF16
+  # quantile bins are generated separately for the primary trend analysis.
+  length_buckets: [0, 513, 1025, 2049, 4097, 8193, 12289, 16385, 24577, 32769]
+  length_quantile_bins: 5
+  primary_length_outcome: fake_real_answer_disagreement
+  permutation_trials: 10000
+  # Abort comparison/plot generation if more than 1% of any condition reaches
+  # the output cap without closing </think>.
+  max_reasoning_censored_fraction: 0.01
   warmup_samples: 2
   logit_subset_size: 20
   logit_top_k: 20

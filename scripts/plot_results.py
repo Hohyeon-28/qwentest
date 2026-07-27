@@ -48,6 +48,7 @@ def main() -> None:
 
     summary = json.loads((root / "comparisons" / "summary.json").read_text(encoding="utf-8"))
     buckets = pd.read_csv(root / "comparisons" / "length_bucket.csv")
+    quantiles = pd.read_csv(root / "comparisons" / "length_quantile.csv")
     conditions = ("bf16", "fake_quant", "real_quant_marlin")
 
     fig, ax = plt.subplots(figsize=(7, 4))
@@ -79,6 +80,46 @@ def main() -> None:
     ax.set_xlabel("BF16 reasoning-token bucket")
     _save(fig, output / "agreement_by_length.png")
 
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    x_quantile = np.arange(len(quantiles))
+    quantile_labels = [
+        (
+            f"{row.bf16_reasoning_length_quantile}\n"
+            f"{int(row.min_bf16_reasoning_tokens)}-{int(row.max_bf16_reasoning_tokens)}"
+        )
+        for row in quantiles.itertuples()
+    ]
+    ax.plot(
+        x_quantile,
+        quantiles["bf16_accuracy"] - quantiles["fake_accuracy"],
+        marker="o",
+        label="BF16 - Fake",
+    )
+    ax.plot(
+        x_quantile,
+        quantiles["bf16_accuracy"] - quantiles["real_accuracy"],
+        marker="o",
+        label="BF16 - Real",
+    )
+    ax.axhline(0, color="black", linewidth=0.8)
+    ax.set_xticks(x_quantile, quantile_labels)
+    ax.set_ylabel("Accuracy drop")
+    ax.set_xlabel("Balanced BF16 completed-reasoning quantile (token range)")
+    ax.legend()
+    _save(fig, output / "accuracy_drop_by_length_quantile.png")
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    ax.bar(
+        x_quantile,
+        quantiles["fake_real_answer_agreement"],
+        color="#b279a2",
+    )
+    ax.set_ylim(0, 1)
+    ax.set_xticks(x_quantile, quantile_labels)
+    ax.set_ylabel("Fake/Real final-answer agreement")
+    ax.set_xlabel("Balanced BF16 completed-reasoning quantile (token range)")
+    _save(fig, output / "agreement_by_length_quantile.png")
+
     fig, ax = plt.subplots(figsize=(7, 4))
     latency = [
         summary["conditions"][item]["total_latency_seconds"] for item in conditions
@@ -91,7 +132,11 @@ def main() -> None:
     fig, ax = plt.subplots(figsize=(8, 4.5))
     for condition in conditions:
         records = read_jsonl(root / condition / "predictions.jsonl")
-        lengths = [int(row.get("reasoning_token_count") or 0) for row in records]
+        lengths = [
+            int(row.get("reasoning_token_count") or 0)
+            for row in records
+            if not row.get("reasoning_length_censored")
+        ]
         ax.hist(
             lengths,
             bins=30,
@@ -101,6 +146,7 @@ def main() -> None:
         )
     ax.set_xlabel("Reasoning tokens")
     ax.set_ylabel("Samples")
+    ax.set_title("Completed reasoning traces; max-token-censored traces excluded")
     ax.legend()
     _save(fig, output / "token_length_distribution.png")
 
