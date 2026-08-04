@@ -85,3 +85,6 @@ evaluation:
   warmup_samples: 2
   logit_subset_size: 20
   logit_top_k: 20
+  # Mechanism analysis uses all observed Fake/Real correctness flips and an
+  # equal number of deterministic length/divergence-matched non-flip controls.
+  first_divergence_repeats: 2

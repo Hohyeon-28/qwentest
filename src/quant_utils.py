@@ -291,3 +291,52 @@ def load_shared_gptq_fake_model(
     reports = dequantize_torch_quant_model_(model, dtype=dtype)
     model = model.to(device=device, dtype=dtype).eval()
     return model, reports
+
+
+def load_shared_gptq_marlin_model(
+    config: dict[str, Any],
+    *,
+    device: str = "cuda",
+) -> tuple[torch.nn.Module, str, int]:
+    """Load the shared GPTQ checkpoint through GPTQModel's Marlin backend.
+
+    This loader is intended for controlled mechanism analysis: it keeps the
+    Transformers/GPTQModel graph used by the dense Fake reference and changes
+    only the quantized Linear implementation.  It is not a replacement for the
+    vLLM deployment result.
+    """
+
+    from gptqmodel import BACKEND, GPTQModel
+
+    validate_shared_quant_config(config)
+    checkpoint = config["models"]["real_gptq"]
+    backend_name = next(
+        (
+            name
+            for name in ("GPTQ_MARLIN", "MARLIN")
+            if getattr(BACKEND, name, None) is not None
+        ),
+        None,
+    )
+    if backend_name is None:
+        available = sorted(name for name in dir(BACKEND) if "MARLIN" in name.upper())
+        raise RuntimeError(
+            "Installed GPTQModel exposes no Marlin backend; "
+            f"Marlin-like backend names={available}"
+        )
+    backend = getattr(BACKEND, backend_name)
+    loaded = GPTQModel.load(
+        model_id_or_path=checkpoint,
+        backend=backend,
+        device=device,
+        trust_remote_code=bool(config["models"]["trust_remote_code"]),
+    )
+    model = getattr(loaded, "model", loaded).eval()
+    marlin_layers = sum(
+        "marlin" in type(module).__name__.lower() for module in model.modules()
+    )
+    if marlin_layers == 0:
+        raise RuntimeError(
+            f"Requested BACKEND.{backend_name}, but no Marlin Linear modules were loaded"
+        )
+    return model, f"GPTQModel.BACKEND.{backend_name}", marlin_layers
