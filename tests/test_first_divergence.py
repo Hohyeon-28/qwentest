@@ -2,8 +2,11 @@ import torch
 
 from src.first_divergence import (
     build_divergence_rows,
+    candidate_relation_changed,
     compare_logit_pair,
     first_divergence,
+    gap_relation,
+    matched_continuation_budget,
     select_flip_and_matched_controls,
 )
 
@@ -56,3 +59,25 @@ def test_logit_comparison_detects_candidate_gap_crossing():
     assert result["fake_candidate_gap"] > 0
     assert result["real_candidate_gap"] < 0
     assert result["candidate_gap_shift"] < 0
+
+
+def test_candidate_relation_keeps_ties_separate():
+    assert gap_relation(0.0) == "tie"
+    assert gap_relation(0.2) == "fake_token_preferred"
+    assert gap_relation(-0.2) == "real_token_preferred"
+    assert candidate_relation_changed(0.0, -0.1) is True
+    assert candidate_relation_changed(0.2, 0.1) is False
+
+
+def test_matched_continuation_budget_preserves_original_cap():
+    remaining = matched_continuation_budget(100, 39)
+    assert 39 + 1 + remaining == 100
+
+
+def test_matched_continuation_budget_rejects_exhausted_prefix():
+    try:
+        matched_continuation_budget(10, 9)
+    except ValueError as exc:
+        assert "No continuation budget" in str(exc)
+    else:
+        raise AssertionError("Expected an exhausted generation budget to fail")

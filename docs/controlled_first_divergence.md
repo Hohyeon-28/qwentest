@@ -78,3 +78,85 @@ The selected prefix is the first divergence observed in the old cross-runtime
 free generations. If the controlled run does not reproduce that decision, the
 script does not search for a new first divergence; it records the non-reproduction
 as evidence against attributing the old split to Marlin alone.
+
+## Actual vLLM deployment-prefix replay
+
+After the controlled captures above exist, replay the same 44 prefixes through
+the exact vLLM GPTQ-Marlin deployment configuration used by the original Real
+run:
+
+```bash
+TAG=math500_first_divergence_v1
+
+CUDA_VISIBLE_DEVICES=0 python scripts/analyze_first_divergence.py capture-vllm \
+  --config configs/experiment.yaml \
+  --dataset math500 \
+  --analysis-tag "$TAG" \
+  --repeats 2
+
+python scripts/analyze_first_divergence.py compare-vllm \
+  --config configs/experiment.yaml \
+  --dataset math500 \
+  --analysis-tag "$TAG"
+```
+
+The public vLLM API does not expose a raw full-vocabulary logit tensor. The
+replay therefore appends each of the two previously observed candidate tokens
+to the identical forced prefix and requests its prompt log-probability. The
+normalization term cancels when the two log-probabilities are subtracted, so
+`vllm_candidate_gap` is the exact deployment-path gap between the candidates.
+The response also exposes the full-vocabulary top-1 token. Two candidate
+queries and two complete repeats detect request-order or repeat instability.
+
+Additional outputs are:
+
+```text
+vllm_deployment_replay.jsonl
+vllm_deployment_capture.json
+vllm_deployment_comparison.jsonl
+vllm_deployment_summary.json
+```
+
+This comparison intentionally includes vLLM attention, scheduling, numerical
+ordering, and Marlin. It tests whether the old split reappears at a fixed
+prefix; it does not attribute a positive result to Marlin alone.
+
+## Forced-token counterfactual continuation
+
+Run the primary causal check on `math500-00135` after prefix replay:
+
+```bash
+TAG=math500_first_divergence_v1
+
+CUDA_VISIBLE_DEVICES=0 python scripts/analyze_first_divergence.py branch-vllm \
+  --config configs/experiment.yaml \
+  --dataset math500 \
+  --analysis-tag "$TAG" \
+  --branch-tag math500_00135_v1 \
+  --sample-id math500-00135
+```
+
+Both branches use the same vLLM GPTQ-Marlin backend after the forced token.
+The default continuation budget is
+
+```text
+original max_new_tokens - common generated prefix length - 1 forced token
+```
+
+so the two branches retain the original total generation cap. This is required
+when testing a completion-versus-truncation outcome; granting a fresh 38,912
+tokens at the branch would move the budget boundary and answer a different
+question.
+
+Results are written without touching the original predictions:
+
+```text
+counterfactual/math500_00135_v1/branch_outputs.jsonl
+counterfactual/math500_00135_v1/branch_summary.json
+```
+
+The result estimates the conditional effect of the selected token at the fixed
+prefix. It cannot identify which upstream runtime component originally made
+that token preferable. As a negative control, the same command can be run with
+a new branch tag and `--sample-id math500-00420`, where the old token split was
+reproduced even though the original final outcome did not flip.

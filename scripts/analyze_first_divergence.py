@@ -14,18 +14,27 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import load_config, results_root
+from src.answer_parser import score_record
 from src.first_divergence import (
     build_divergence_rows,
+    candidate_relation_changed,
     compare_logit_pair,
+    gap_relation,
+    matched_continuation_budget,
     numeric_summary,
     select_flip_and_matched_controls,
+    top_two,
 )
+from src.inference import resolved_stop_token_ids
 from src.logging_utils import read_jsonl, seed_everything, token_ids_sha256
+from src.prompts import split_reasoning_and_answer
 from src.quant_utils import (
+    fingerprint_gptq_checkpoint,
     load_shared_gptq_fake_model,
     load_shared_gptq_marlin_model,
     validate_shared_quant_config,
 )
+from scripts.run_vllm_marlin import validate_real_checkpoint
 
 
 SCHEMA_VERSION = 1
@@ -389,6 +398,592 @@ def compare_captures(args: argparse.Namespace, config: dict[str, Any]) -> None:
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
+def _forced_prefix_for_candidate(
+    candidate: dict[str, Any],
+    fake_predictions: dict[str, dict[str, Any]],
+    real_predictions: dict[str, dict[str, Any]],
+) -> list[int]:
+    sample_id = str(candidate["sample_id"])
+    fake_record = fake_predictions[sample_id]
+    real_record = real_predictions[sample_id]
+    position = int(candidate["first_divergence_index"])
+    fake_prefix = [
+        int(token) for token in fake_record["generated_token_ids"][:position]
+    ]
+    real_prefix = [
+        int(token) for token in real_record["generated_token_ids"][:position]
+    ]
+    if fake_prefix != real_prefix:
+        raise ValueError(f"Free-generation common prefix mismatch for {sample_id}")
+    prefix_ids = [int(token) for token in fake_record["input_token_ids"]] + fake_prefix
+    if token_ids_sha256(prefix_ids) != candidate["forced_prefix_sha256"]:
+        raise ValueError(f"Forced prefix hash mismatch for {sample_id}")
+    return prefix_ids
+
+
+def _build_vllm_engine(
+    args: argparse.Namespace,
+    config: dict[str, Any],
+) -> tuple[Any, dict[str, Any], str]:
+    from vllm import LLM
+
+    validate_real_checkpoint(config)
+    manifest = fingerprint_gptq_checkpoint(
+        config["models"]["real_gptq"],
+        revision=config["models"]["revision"],
+    )
+    real_config = config["quantization"]["real"]
+    llm = LLM(
+        model=config["models"]["real_gptq"],
+        tokenizer=config["models"]["base"],
+        quantization="gptq_marlin",
+        dtype="bfloat16",
+        seed=int(config["generation"]["seed"]),
+        revision=config["models"]["revision"],
+        trust_remote_code=bool(config["models"]["trust_remote_code"]),
+        tensor_parallel_size=int(args.tensor_parallel_size),
+        gpu_memory_utilization=float(args.gpu_memory_utilization),
+        max_model_len=int(real_config["max_model_len"]),
+        enable_chunked_prefill=bool(
+            real_config.get("enable_chunked_prefill", False)
+        ),
+        enforce_eager=bool(real_config.get("enforce_eager", True)),
+    )
+    try:
+        selected_backend = str(llm.llm_engine.model_config.quantization)
+    except Exception:
+        selected_backend = "gptq_marlin (requested)"
+    return llm, manifest, selected_backend
+
+
+def _prompt_token_score(result: Any, token_id: int) -> dict[str, Any]:
+    prompt_logprobs = result.prompt_logprobs or []
+    if not prompt_logprobs or prompt_logprobs[-1] is None:
+        raise RuntimeError("vLLM did not return the requested prompt logprobs")
+    raw = prompt_logprobs[-1]
+    entries: list[tuple[int, float, int | None]] = []
+    for raw_token_id, value in raw.items():
+        logprob = float(getattr(value, "logprob", value))
+        rank_value = getattr(value, "rank", None)
+        rank = int(rank_value) if rank_value is not None else None
+        entries.append((int(raw_token_id), logprob, rank))
+    by_token = {item[0]: item for item in entries}
+    requested = by_token.get(int(token_id))
+    if requested is None:
+        raise RuntimeError(
+            f"vLLM omitted requested prompt token {token_id} from prompt_logprobs"
+        )
+    ranked = [item for item in entries if item[2] is not None]
+    top = (
+        min(ranked, key=lambda item: (int(item[2]), item[0]))
+        if ranked
+        else max(entries, key=lambda item: (item[1], -item[0]))
+    )
+    return {
+        "requested_token_id": int(token_id),
+        "requested_token_logprob": requested[1],
+        "requested_token_rank": requested[2],
+        "prefix_top1_token_id": top[0],
+        "prefix_top1_logprob": top[1],
+    }
+
+
+def capture_vllm_prefix_replay(
+    args: argparse.Namespace,
+    config: dict[str, Any],
+) -> None:
+    from vllm import SamplingParams
+
+    output = _analysis_root(config, args.dataset, args.analysis_tag)
+    candidates = read_jsonl(output / "candidates.jsonl")
+    if not candidates:
+        raise RuntimeError("Run the select command first")
+    rows_path = output / "vllm_deployment_replay.jsonl"
+    metadata_path = output / "vllm_deployment_capture.json"
+    if (rows_path.exists() or metadata_path.exists()) and not args.overwrite:
+        raise FileExistsError(
+            "vLLM deployment replay already exists; use a new --analysis-tag "
+            "or pass --overwrite"
+        )
+    fake_predictions, real_predictions = _prediction_maps(config, args.dataset)
+    llm, manifest, selected_backend = _build_vllm_engine(args, config)
+    expected_tuple = candidates[0].get("quantization_tuple_sha256")
+    if expected_tuple and manifest["tuple_sha256"] != expected_tuple:
+        raise ValueError(
+            "vLLM checkpoint tuple differs from the selected candidates: "
+            f"selected={expected_tuple}, vllm={manifest['tuple_sha256']}"
+        )
+
+    sampling = SamplingParams(
+        temperature=0.0,
+        max_tokens=1,
+        prompt_logprobs=int(args.prompt_logprobs),
+        seed=int(config["generation"]["seed"]),
+    )
+    replay_rows: list[dict[str, Any]] = []
+    repeat_max_abs_candidate_logprob_delta = 0.0
+    repeat_top1_agreements: list[bool] = []
+    query_top1_agreements: list[bool] = []
+    for index, candidate in enumerate(candidates, start=1):
+        sample_id = str(candidate["sample_id"])
+        print(f"[vllm-prefix-replay] {index}/{len(candidates)} {sample_id}", flush=True)
+        prefix_ids = _forced_prefix_for_candidate(
+            candidate, fake_predictions, real_predictions
+        )
+        fake_token = int(candidate["fake_free_token_id"])
+        real_token = int(candidate["real_free_token_id"])
+        repeat_scores: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for _ in range(args.repeats):
+            results = llm.generate(
+                [
+                    {"prompt_token_ids": [*prefix_ids, fake_token]},
+                    {"prompt_token_ids": [*prefix_ids, real_token]},
+                ],
+                sampling,
+                use_tqdm=False,
+            )
+            fake_score = _prompt_token_score(results[0], fake_token)
+            real_score = _prompt_token_score(results[1], real_token)
+            repeat_scores.append((fake_score, real_score))
+            query_top1_agreements.append(
+                fake_score["prefix_top1_token_id"]
+                == real_score["prefix_top1_token_id"]
+            )
+        baseline_fake, baseline_real = repeat_scores[0]
+        baseline_gap = (
+            baseline_fake["requested_token_logprob"]
+            - baseline_real["requested_token_logprob"]
+        )
+        for fake_score, real_score in repeat_scores[1:]:
+            repeat_max_abs_candidate_logprob_delta = max(
+                repeat_max_abs_candidate_logprob_delta,
+                abs(
+                    fake_score["requested_token_logprob"]
+                    - baseline_fake["requested_token_logprob"]
+                ),
+                abs(
+                    real_score["requested_token_logprob"]
+                    - baseline_real["requested_token_logprob"]
+                ),
+            )
+            repeat_top1_agreements.extend(
+                [
+                    fake_score["prefix_top1_token_id"]
+                    == baseline_fake["prefix_top1_token_id"],
+                    real_score["prefix_top1_token_id"]
+                    == baseline_real["prefix_top1_token_id"],
+                ]
+            )
+        replay_rows.append(
+            {
+                "sample_id": sample_id,
+                "selection_role": candidate["selection_role"],
+                "group": candidate["group"],
+                "forced_prefix_sha256": candidate["forced_prefix_sha256"],
+                "forced_prefix_token_count": len(prefix_ids),
+                "first_divergence_index": int(candidate["first_divergence_index"]),
+                "fake_free_token_id": fake_token,
+                "real_free_token_id": real_token,
+                "fake_candidate_logprob": baseline_fake[
+                    "requested_token_logprob"
+                ],
+                "real_candidate_logprob": baseline_real[
+                    "requested_token_logprob"
+                ],
+                "vllm_candidate_gap": baseline_gap,
+                "vllm_candidate_gap_relation": gap_relation(baseline_gap),
+                "fake_candidate_rank": baseline_fake["requested_token_rank"],
+                "real_candidate_rank": baseline_real["requested_token_rank"],
+                "prefix_top1_token_id": baseline_fake["prefix_top1_token_id"],
+                "prefix_top1_logprob": baseline_fake["prefix_top1_logprob"],
+                "candidate_queries_top1_agree": (
+                    baseline_fake["prefix_top1_token_id"]
+                    == baseline_real["prefix_top1_token_id"]
+                ),
+            }
+        )
+
+    _write_jsonl(rows_path, replay_rows)
+    metadata = {
+        "schema_version": SCHEMA_VERSION,
+        "analysis_tag": args.analysis_tag,
+        "condition": "vllm_deployment_marlin",
+        "comparison_scope": "actual_vllm_deployment_prefix_replay",
+        "samples": len(replay_rows),
+        "repeats": args.repeats,
+        "prompt_logprobs": int(args.prompt_logprobs),
+        "full_vocab_logits_saved": False,
+        "candidate_pair_logprob_gap_exact": True,
+        "requested_quantization_backend": "gptq_marlin",
+        "selected_quantization_backend": selected_backend,
+        "quantization_tuple_sha256": manifest["tuple_sha256"],
+        "repeat_max_abs_candidate_logprob_delta": (
+            repeat_max_abs_candidate_logprob_delta
+        ),
+        "repeat_top1_agreement": (
+            sum(repeat_top1_agreements) / len(repeat_top1_agreements)
+            if repeat_top1_agreements
+            else 1.0
+        ),
+        "candidate_query_top1_agreement": (
+            sum(query_top1_agreements) / len(query_top1_agreements)
+            if query_top1_agreements
+            else 1.0
+        ),
+        "interpretation_guardrail": (
+            "vLLM exposes prompt logprobs rather than raw full-vocabulary logits. "
+            "The two old candidate logprobs are exact for the deployment path, and "
+            "their normalization cancels in the reported pair gap."
+        ),
+    }
+    _write_json(metadata_path, metadata)
+    print(json.dumps(metadata, ensure_ascii=False, indent=2))
+
+
+def compare_vllm_prefix_replay(
+    args: argparse.Namespace,
+    config: dict[str, Any],
+) -> None:
+    root = _analysis_root(config, args.dataset, args.analysis_tag)
+    fake_meta, fake_logits = _load_capture(root, "fake_dense")
+    replay_rows = read_jsonl(root / "vllm_deployment_replay.jsonl")
+    if not replay_rows:
+        raise RuntimeError("Run capture-vllm first")
+    replay = {str(row["sample_id"]): row for row in replay_rows}
+    comparisons: list[dict[str, Any]] = []
+    for index, fake_row in enumerate(fake_meta["rows"]):
+        sample_id = str(fake_row["sample_id"])
+        real_row = replay.get(sample_id)
+        if real_row is None:
+            raise ValueError(f"Missing vLLM replay row for {sample_id}")
+        if fake_row["forced_prefix_sha256"] != real_row["forced_prefix_sha256"]:
+            raise ValueError(f"Prefix mismatch for {sample_id}")
+        fake_top1, fake_top1_logit, fake_top2, fake_top2_logit = top_two(
+            fake_logits[index, 0]
+        )
+        fake_token = int(fake_row["fake_free_token_id"])
+        real_token = int(fake_row["real_free_token_id"])
+        fake_gap = float(
+            (fake_logits[index, 0, fake_token] - fake_logits[index, 0, real_token]).item()
+        )
+        vllm_gap = float(real_row["vllm_candidate_gap"])
+        vllm_top1 = int(real_row["prefix_top1_token_id"])
+        comparisons.append(
+            {
+                **fake_row,
+                "fake_dense_top1_token_id": fake_top1,
+                "fake_dense_top2_token_id": fake_top2,
+                "fake_dense_top1_margin": fake_top1_logit - fake_top2_logit,
+                "vllm_top1_token_id": vllm_top1,
+                "fake_vllm_top1_flip": fake_top1 != vllm_top1,
+                "old_free_candidate_fake_dense_gap": fake_gap,
+                "old_free_candidate_vllm_gap": vllm_gap,
+                "fake_dense_gap_relation": gap_relation(fake_gap),
+                "vllm_gap_relation": gap_relation(vllm_gap),
+                "candidate_relation_changed": candidate_relation_changed(
+                    fake_gap, vllm_gap
+                ),
+                "old_free_divergence_reproduced_exactly": (
+                    fake_top1 == fake_token and vllm_top1 == real_token
+                ),
+                "candidate_queries_top1_agree": bool(
+                    real_row["candidate_queries_top1_agree"]
+                ),
+                "fake_candidate_vllm_logprob": real_row[
+                    "fake_candidate_logprob"
+                ],
+                "real_candidate_vllm_logprob": real_row[
+                    "real_candidate_logprob"
+                ],
+            }
+        )
+    _write_jsonl(root / "vllm_deployment_comparison.jsonl", comparisons)
+
+    def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "samples": len(rows),
+            "fake_vllm_top1_flips": sum(
+                bool(row["fake_vllm_top1_flip"]) for row in rows
+            ),
+            "old_free_divergences_reproduced_exactly": sum(
+                bool(row["old_free_divergence_reproduced_exactly"])
+                for row in rows
+            ),
+            "candidate_relations_changed_including_ties": sum(
+                bool(row["candidate_relation_changed"]) for row in rows
+            ),
+            "candidate_query_top1_disagreements": sum(
+                not bool(row["candidate_queries_top1_agree"]) for row in rows
+            ),
+            "fake_dense_top1_margin": numeric_summary(
+                row["fake_dense_top1_margin"] for row in rows
+            ),
+            "candidate_gap_shift": numeric_summary(
+                abs(
+                    float(row["old_free_candidate_vllm_gap"])
+                    - float(row["old_free_candidate_fake_dense_gap"])
+                )
+                for row in rows
+            ),
+        }
+
+    groups: dict[str, list[dict[str, Any]]] = {"all": comparisons}
+    for row in comparisons:
+        groups.setdefault(str(row["selection_role"]), []).append(row)
+        groups.setdefault(str(row["group"]), []).append(row)
+    summary = {
+        "schema_version": SCHEMA_VERSION,
+        "analysis_tag": args.analysis_tag,
+        "comparison_scope": "fake_dense_transformers_vs_actual_vllm_marlin_at_fixed_prefix",
+        "groups": {name: summarize(rows) for name, rows in groups.items()},
+        "interpretation_guardrail": (
+            "This tests whether the old split reappears at an identical forced prefix "
+            "through the actual vLLM deployment path. It intentionally includes the "
+            "vLLM runtime plus Marlin and therefore does not isolate Marlin alone."
+        ),
+    }
+    _write_json(root / "vllm_deployment_summary.json", summary)
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
+def _branch_record(
+    *,
+    tokenizer: Any,
+    source: dict[str, Any],
+    candidate: dict[str, Any],
+    branch_name: str,
+    branch_token_id: int,
+    common_generated_prefix: list[int],
+    continuation_ids: list[int],
+    finish_reason: str | None,
+    remaining_budget: int,
+    repeat: int,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    full_generated_ids = [
+        *common_generated_prefix,
+        int(branch_token_id),
+        *continuation_ids,
+    ]
+    reasoning, final_text, reasoning_count, reasoning_complete = (
+        split_reasoning_and_answer(tokenizer, full_generated_ids)
+    )
+    record = {
+        "sample_id": str(candidate["sample_id"]),
+        "dataset_index": source.get("dataset_index"),
+        "question": source.get("question"),
+        "ground_truth": source.get("ground_truth"),
+        "branch": branch_name,
+        "branch_repeat": repeat,
+        "branch_token_id": int(branch_token_id),
+        "branch_token_text": tokenizer.decode([int(branch_token_id)]),
+        "forced_prefix_sha256": candidate["forced_prefix_sha256"],
+        "first_divergence_index": int(candidate["first_divergence_index"]),
+        "common_generated_prefix_count": len(common_generated_prefix),
+        "continuation_budget": remaining_budget,
+        "continuation_token_count": len(continuation_ids),
+        "generated_token_count": len(full_generated_ids),
+        "generated_token_ids": full_generated_ids,
+        "generated_token_ids_sha256": token_ids_sha256(full_generated_ids),
+        "generated_text": tokenizer.decode(full_generated_ids),
+        "reasoning": reasoning,
+        "final_text": final_text,
+        "generated_reasoning_token_count": reasoning_count,
+        "reasoning_complete": reasoning_complete,
+        "finish_reason": finish_reason,
+        "hit_max_new_tokens": finish_reason == "length",
+        "generation_enable_thinking": bool(
+            config["generation"]["enable_thinking"]
+        ),
+        "generation_max_new_tokens": int(
+            config["generation"]["max_new_tokens"]
+        ),
+        "continuation_backend": "vllm_gptq_marlin_for_both_branches",
+    }
+    return score_record(record, "math500")
+
+
+def run_vllm_forced_branches(
+    args: argparse.Namespace,
+    config: dict[str, Any],
+) -> None:
+    from transformers import AutoTokenizer
+    from vllm import SamplingParams
+
+    if args.dataset != "math500":
+        raise ValueError("The causal branch scorer is currently defined for math500")
+    analysis_root = _analysis_root(config, args.dataset, args.analysis_tag)
+    candidates = {
+        str(row["sample_id"]): row
+        for row in read_jsonl(analysis_root / "candidates.jsonl")
+    }
+    sample_ids = args.sample_id or ["math500-00135"]
+    missing = [sample_id for sample_id in sample_ids if sample_id not in candidates]
+    if missing:
+        raise ValueError(f"Samples are not in candidates.jsonl: {missing}")
+    branch_root = analysis_root / "counterfactual" / args.branch_tag
+    rows_path = branch_root / "branch_outputs.jsonl"
+    summary_path = branch_root / "branch_summary.json"
+    if (rows_path.exists() or summary_path.exists()) and not args.overwrite:
+        raise FileExistsError(
+            f"Branch run already exists under {branch_root}; use a new "
+            "--branch-tag or pass --overwrite"
+        )
+    fake_predictions, real_predictions = _prediction_maps(config, args.dataset)
+    tokenizer = AutoTokenizer.from_pretrained(
+        config["models"]["base"],
+        revision=config["models"]["revision"],
+        trust_remote_code=bool(config["models"]["trust_remote_code"]),
+    )
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+    llm, manifest, selected_backend = _build_vllm_engine(args, config)
+    generation = config["generation"]
+    stop_ids = resolved_stop_token_ids(config, tokenizer)
+    all_rows: list[dict[str, Any]] = []
+    effects: list[dict[str, Any]] = []
+    for sample_id in sample_ids:
+        candidate = candidates[sample_id]
+        source = fake_predictions[sample_id]
+        prefix_ids = _forced_prefix_for_candidate(
+            candidate, fake_predictions, real_predictions
+        )
+        position = int(candidate["first_divergence_index"])
+        common_generated_prefix = [
+            int(token) for token in source["generated_token_ids"][:position]
+        ]
+        remaining = (
+            int(args.max_continuation_tokens)
+            if args.max_continuation_tokens is not None
+            else matched_continuation_budget(
+                int(generation["max_new_tokens"]), position
+            )
+        )
+        max_model_len = int(config["quantization"]["real"]["max_model_len"])
+        if len(prefix_ids) + 1 + remaining > max_model_len:
+            raise ValueError(
+                f"Counterfactual branch for {sample_id} exceeds max_model_len: "
+                f"{len(prefix_ids) + 1 + remaining} > {max_model_len}"
+            )
+        sampling = SamplingParams(
+            temperature=0.0,
+            top_p=float(generation["top_p"]),
+            top_k=int(generation["top_k"]),
+            seed=int(generation["seed"]),
+            max_tokens=remaining,
+            stop_token_ids=stop_ids,
+        )
+        branches = (
+            ("fake_token", int(candidate["fake_free_token_id"])),
+            ("real_token", int(candidate["real_free_token_id"])),
+        )
+        sample_rows: list[dict[str, Any]] = []
+        for repeat in range(1, args.repeats + 1):
+            for branch_name, branch_token in branches:
+                print(
+                    f"[vllm-branch] {sample_id} {branch_name} "
+                    f"repeat={repeat}/{args.repeats} budget={remaining}",
+                    flush=True,
+                )
+                request = {"prompt_token_ids": [*prefix_ids, branch_token]}
+                result = llm.generate([request], sampling, use_tqdm=False)[0]
+                completion = result.outputs[0]
+                continuation_ids = [int(token) for token in completion.token_ids]
+                row = _branch_record(
+                    tokenizer=tokenizer,
+                    source=source,
+                    candidate=candidate,
+                    branch_name=branch_name,
+                    branch_token_id=branch_token,
+                    common_generated_prefix=common_generated_prefix,
+                    continuation_ids=continuation_ids,
+                    finish_reason=getattr(completion, "finish_reason", None),
+                    remaining_budget=remaining,
+                    repeat=repeat,
+                    config=config,
+                )
+                sample_rows.append(row)
+                all_rows.append(row)
+        first_fake = next(
+            row
+            for row in sample_rows
+            if row["branch"] == "fake_token" and row["branch_repeat"] == 1
+        )
+        first_real = next(
+            row
+            for row in sample_rows
+            if row["branch"] == "real_token" and row["branch_repeat"] == 1
+        )
+        reproducible = {}
+        for branch_name, _ in branches:
+            hashes = {
+                row["generated_token_ids_sha256"]
+                for row in sample_rows
+                if row["branch"] == branch_name
+            }
+            reproducible[branch_name] = len(hashes) == 1
+        effects.append(
+            {
+                "sample_id": sample_id,
+                "fake_branch_is_correct": bool(first_fake["is_correct"]),
+                "real_branch_is_correct": bool(first_real["is_correct"]),
+                "correctness_changed": (
+                    bool(first_fake["is_correct"]) != bool(first_real["is_correct"])
+                ),
+                "fake_branch_hit_max_new_tokens": bool(
+                    first_fake["hit_max_new_tokens"]
+                ),
+                "real_branch_hit_max_new_tokens": bool(
+                    first_real["hit_max_new_tokens"]
+                ),
+                "truncation_changed": (
+                    bool(first_fake["hit_max_new_tokens"])
+                    != bool(first_real["hit_max_new_tokens"])
+                ),
+                "final_answer_changed": (
+                    first_fake.get("final_answer") != first_real.get("final_answer")
+                ),
+                "generated_token_count_delta_real_minus_fake": (
+                    int(first_real["generated_token_count"])
+                    - int(first_fake["generated_token_count"])
+                ),
+                "branch_reproducible": reproducible,
+            }
+        )
+    _write_jsonl(rows_path, all_rows)
+    summary = {
+        "schema_version": SCHEMA_VERSION,
+        "analysis_tag": args.analysis_tag,
+        "branch_tag": args.branch_tag,
+        "samples": sample_ids,
+        "repeats": args.repeats,
+        "budget_mode": (
+            "explicit_continuation_budget"
+            if args.max_continuation_tokens is not None
+            else "matched_original_total_generation_budget"
+        ),
+        "same_continuation_backend_for_both_branches": True,
+        "requested_quantization_backend": "gptq_marlin",
+        "selected_quantization_backend": selected_backend,
+        "quantization_tuple_sha256": manifest["tuple_sha256"],
+        "effects": effects,
+        "causal_scope": (
+            "The comparison estimates the conditional effect of forcing one old "
+            "divergence token versus the other at a fixed prefix, with every later "
+            "token generated by the same vLLM GPTQ-Marlin backend. It does not by "
+            "itself identify which upstream kernel or runtime component created the "
+            "original token preference."
+        ),
+    }
+    _write_json(summary_path, summary)
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
+def _add_vllm_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--tensor-parallel-size", type=int, default=1)
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Audit Fake/Real first-divergence prefixes under a controlled runtime"
@@ -420,6 +1015,37 @@ def main() -> None:
     compare.add_argument("--dataset", choices=("gsm8k", "math500"), default="math500")
     compare.add_argument("--analysis-tag", default="controlled_v1")
 
+    capture_vllm = subparsers.add_parser("capture-vllm")
+    capture_vllm.add_argument("--config", default="configs/experiment.yaml")
+    capture_vllm.add_argument(
+        "--dataset", choices=("gsm8k", "math500"), default="math500"
+    )
+    capture_vllm.add_argument("--analysis-tag", default="controlled_v1")
+    capture_vllm.add_argument("--prompt-logprobs", type=int, default=1)
+    capture_vllm.add_argument("--repeats", type=int, default=None)
+    capture_vllm.add_argument("--overwrite", action="store_true")
+    _add_vllm_args(capture_vllm)
+
+    compare_vllm = subparsers.add_parser("compare-vllm")
+    compare_vllm.add_argument("--config", default="configs/experiment.yaml")
+    compare_vllm.add_argument(
+        "--dataset", choices=("gsm8k", "math500"), default="math500"
+    )
+    compare_vllm.add_argument("--analysis-tag", default="controlled_v1")
+
+    branch_vllm = subparsers.add_parser("branch-vllm")
+    branch_vllm.add_argument("--config", default="configs/experiment.yaml")
+    branch_vllm.add_argument(
+        "--dataset", choices=("gsm8k", "math500"), default="math500"
+    )
+    branch_vllm.add_argument("--analysis-tag", default="controlled_v1")
+    branch_vllm.add_argument("--branch-tag", required=True)
+    branch_vllm.add_argument("--sample-id", action="append", default=None)
+    branch_vllm.add_argument("--max-continuation-tokens", type=int, default=None)
+    branch_vllm.add_argument("--repeats", type=int, default=1)
+    branch_vllm.add_argument("--overwrite", action="store_true")
+    _add_vllm_args(branch_vllm)
+
     args = parser.parse_args()
     config = load_config(args.config)
     if args.command == "select":
@@ -432,8 +1058,29 @@ def main() -> None:
         if args.repeats < 1:
             raise ValueError("--repeats must be positive")
         capture_logits(args, config)
-    else:
+    elif args.command == "compare":
         compare_captures(args, config)
+    elif args.command == "capture-vllm":
+        if args.repeats is None:
+            args.repeats = int(
+                config["evaluation"].get("first_divergence_repeats", 2)
+            )
+        if args.repeats < 1:
+            raise ValueError("--repeats must be positive")
+        if args.prompt_logprobs < 1:
+            raise ValueError("--prompt-logprobs must be positive")
+        capture_vllm_prefix_replay(args, config)
+    elif args.command == "compare-vllm":
+        compare_vllm_prefix_replay(args, config)
+    else:
+        if args.repeats < 1:
+            raise ValueError("--repeats must be positive")
+        if (
+            args.max_continuation_tokens is not None
+            and args.max_continuation_tokens < 1
+        ):
+            raise ValueError("--max-continuation-tokens must be positive")
+        run_vllm_forced_branches(args, config)
 
 
 if __name__ == "__main__":

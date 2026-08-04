@@ -253,3 +253,44 @@ def numeric_summary(values: Iterable[float]) -> dict[str, float | int | None]:
         "median": median(items),
         "max": max(items),
     }
+
+
+def gap_relation(value: float, *, atol: float = 0.0) -> str:
+    """Classify a two-token logit gap without hiding exact ties."""
+
+    gap = float(value)
+    if abs(gap) <= float(atol):
+        return "tie"
+    return "fake_token_preferred" if gap > 0.0 else "real_token_preferred"
+
+
+def candidate_relation_changed(
+    fake_gap: float,
+    real_gap: float,
+    *,
+    atol: float = 0.0,
+) -> bool:
+    return gap_relation(fake_gap, atol=atol) != gap_relation(real_gap, atol=atol)
+
+
+def matched_continuation_budget(
+    max_new_tokens: int,
+    common_generated_prefix_count: int,
+    *,
+    forced_token_count: int = 1,
+) -> int:
+    """Preserve the original total generation budget after a forced branch."""
+
+    remaining = (
+        int(max_new_tokens)
+        - int(common_generated_prefix_count)
+        - int(forced_token_count)
+    )
+    if remaining < 1:
+        raise ValueError(
+            "No continuation budget remains after the forced branch: "
+            f"max_new_tokens={max_new_tokens}, "
+            f"common_generated_prefix_count={common_generated_prefix_count}, "
+            f"forced_token_count={forced_token_count}"
+        )
+    return remaining
