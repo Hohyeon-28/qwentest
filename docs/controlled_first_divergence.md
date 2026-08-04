@@ -101,12 +101,14 @@ python scripts/analyze_first_divergence.py compare-vllm \
 ```
 
 The public vLLM API does not expose a raw full-vocabulary logit tensor. The
-replay therefore appends each of the two previously observed candidate tokens
-to the identical forced prefix and requests its prompt log-probability. The
-normalization term cancels when the two log-probabilities are subtracted, so
-`vllm_candidate_gap` is the exact deployment-path gap between the candidates.
-The response also exposes the full-vocabulary top-1 token. Two candidate
-queries and two complete repeats detect request-order or repeat instability.
+legacy CUDA 11.8/vLLM stack also fails inside its rank calculation when prompt
+log-probabilities are requested for these prefixes. The replay therefore uses
+two logprob-free one-token requests: an ordinary greedy request records the
+exact full-vocabulary top-1, and a request constrained with
+`allowed_token_ids=[fake_token, real_token]` records the exact preference
+between the old candidates. Repeats detect nondeterministic token decisions.
+The numerical magnitude of the vLLM candidate gap is intentionally not
+reported.
 
 Additional outputs are:
 

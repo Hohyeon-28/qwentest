@@ -17,7 +17,6 @@ from src.config import load_config, results_root
 from src.answer_parser import score_record
 from src.first_divergence import (
     build_divergence_rows,
-    candidate_relation_changed,
     compare_logit_pair,
     gap_relation,
     matched_continuation_budget,
@@ -456,38 +455,6 @@ def _build_vllm_engine(
     return llm, manifest, selected_backend
 
 
-def _prompt_token_score(result: Any, token_id: int) -> dict[str, Any]:
-    prompt_logprobs = result.prompt_logprobs or []
-    if not prompt_logprobs or prompt_logprobs[-1] is None:
-        raise RuntimeError("vLLM did not return the requested prompt logprobs")
-    raw = prompt_logprobs[-1]
-    entries: list[tuple[int, float, int | None]] = []
-    for raw_token_id, value in raw.items():
-        logprob = float(getattr(value, "logprob", value))
-        rank_value = getattr(value, "rank", None)
-        rank = int(rank_value) if rank_value is not None else None
-        entries.append((int(raw_token_id), logprob, rank))
-    by_token = {item[0]: item for item in entries}
-    requested = by_token.get(int(token_id))
-    if requested is None:
-        raise RuntimeError(
-            f"vLLM omitted requested prompt token {token_id} from prompt_logprobs"
-        )
-    ranked = [item for item in entries if item[2] is not None]
-    top = (
-        min(ranked, key=lambda item: (int(item[2]), item[0]))
-        if ranked
-        else max(entries, key=lambda item: (item[1], -item[0]))
-    )
-    return {
-        "requested_token_id": int(token_id),
-        "requested_token_logprob": requested[1],
-        "requested_token_rank": requested[2],
-        "prefix_top1_token_id": top[0],
-        "prefix_top1_logprob": top[1],
-    }
-
-
 def capture_vllm_prefix_replay(
     args: argparse.Namespace,
     config: dict[str, Any],
@@ -514,16 +481,14 @@ def capture_vllm_prefix_replay(
             f"selected={expected_tuple}, vllm={manifest['tuple_sha256']}"
         )
 
-    sampling = SamplingParams(
+    full_vocab_sampling = SamplingParams(
         temperature=0.0,
         max_tokens=1,
-        prompt_logprobs=int(args.prompt_logprobs),
         seed=int(config["generation"]["seed"]),
     )
     replay_rows: list[dict[str, Any]] = []
-    repeat_max_abs_candidate_logprob_delta = 0.0
-    repeat_top1_agreements: list[bool] = []
-    query_top1_agreements: list[bool] = []
+    repeat_full_top1_agreements: list[bool] = []
+    repeat_pair_preference_agreements: list[bool] = []
     for index, candidate in enumerate(candidates, start=1):
         sample_id = str(candidate["sample_id"])
         print(f"[vllm-prefix-replay] {index}/{len(candidates)} {sample_id}", flush=True)
@@ -532,48 +497,50 @@ def capture_vllm_prefix_replay(
         )
         fake_token = int(candidate["fake_free_token_id"])
         real_token = int(candidate["real_free_token_id"])
-        repeat_scores: list[tuple[dict[str, Any], dict[str, Any]]] = []
-        for _ in range(args.repeats):
-            results = llm.generate(
-                [
-                    {"prompt_token_ids": [*prefix_ids, fake_token]},
-                    {"prompt_token_ids": [*prefix_ids, real_token]},
-                ],
-                sampling,
-                use_tqdm=False,
-            )
-            fake_score = _prompt_token_score(results[0], fake_token)
-            real_score = _prompt_token_score(results[1], real_token)
-            repeat_scores.append((fake_score, real_score))
-            query_top1_agreements.append(
-                fake_score["prefix_top1_token_id"]
-                == real_score["prefix_top1_token_id"]
-            )
-        baseline_fake, baseline_real = repeat_scores[0]
-        baseline_gap = (
-            baseline_fake["requested_token_logprob"]
-            - baseline_real["requested_token_logprob"]
+        pair_sampling = SamplingParams(
+            temperature=0.0,
+            max_tokens=1,
+            seed=int(config["generation"]["seed"]),
+            allowed_token_ids=[fake_token, real_token],
         )
-        for fake_score, real_score in repeat_scores[1:]:
-            repeat_max_abs_candidate_logprob_delta = max(
-                repeat_max_abs_candidate_logprob_delta,
-                abs(
-                    fake_score["requested_token_logprob"]
-                    - baseline_fake["requested_token_logprob"]
-                ),
-                abs(
-                    real_score["requested_token_logprob"]
-                    - baseline_real["requested_token_logprob"]
-                ),
+        full_top1_tokens: list[int] = []
+        pair_preferred_tokens: list[int] = []
+        for _ in range(args.repeats):
+            full_result = llm.generate(
+                [{"prompt_token_ids": prefix_ids}],
+                full_vocab_sampling,
+                use_tqdm=False,
+            )[0]
+            pair_result = llm.generate(
+                [{"prompt_token_ids": prefix_ids}],
+                pair_sampling,
+                use_tqdm=False,
+            )[0]
+            full_ids = [int(token) for token in full_result.outputs[0].token_ids]
+            pair_ids = [int(token) for token in pair_result.outputs[0].token_ids]
+            if len(full_ids) != 1 or len(pair_ids) != 1:
+                raise RuntimeError(
+                    f"Expected one replay token for {sample_id}, got "
+                    f"full={full_ids}, pair={pair_ids}"
+                )
+            if pair_ids[0] not in (fake_token, real_token):
+                raise RuntimeError(
+                    f"allowed_token_ids was not enforced for {sample_id}: "
+                    f"generated={pair_ids[0]}"
+                )
+            full_top1_tokens.append(full_ids[0])
+            pair_preferred_tokens.append(pair_ids[0])
+        for token in full_top1_tokens[1:]:
+            repeat_full_top1_agreements.append(token == full_top1_tokens[0])
+        for token in pair_preferred_tokens[1:]:
+            repeat_pair_preference_agreements.append(
+                token == pair_preferred_tokens[0]
             )
-            repeat_top1_agreements.extend(
-                [
-                    fake_score["prefix_top1_token_id"]
-                    == baseline_fake["prefix_top1_token_id"],
-                    real_score["prefix_top1_token_id"]
-                    == baseline_real["prefix_top1_token_id"],
-                ]
-            )
+        pair_relation = (
+            "fake_token_preferred"
+            if pair_preferred_tokens[0] == fake_token
+            else "real_token_preferred"
+        )
         replay_rows.append(
             {
                 "sample_id": sample_id,
@@ -584,22 +551,11 @@ def capture_vllm_prefix_replay(
                 "first_divergence_index": int(candidate["first_divergence_index"]),
                 "fake_free_token_id": fake_token,
                 "real_free_token_id": real_token,
-                "fake_candidate_logprob": baseline_fake[
-                    "requested_token_logprob"
-                ],
-                "real_candidate_logprob": baseline_real[
-                    "requested_token_logprob"
-                ],
-                "vllm_candidate_gap": baseline_gap,
-                "vllm_candidate_gap_relation": gap_relation(baseline_gap),
-                "fake_candidate_rank": baseline_fake["requested_token_rank"],
-                "real_candidate_rank": baseline_real["requested_token_rank"],
-                "prefix_top1_token_id": baseline_fake["prefix_top1_token_id"],
-                "prefix_top1_logprob": baseline_fake["prefix_top1_logprob"],
-                "candidate_queries_top1_agree": (
-                    baseline_fake["prefix_top1_token_id"]
-                    == baseline_real["prefix_top1_token_id"]
-                ),
+                "prefix_top1_token_id": full_top1_tokens[0],
+                "vllm_pair_preferred_token_id": pair_preferred_tokens[0],
+                "vllm_pair_preference_relation": pair_relation,
+                "full_top1_is_one_of_old_candidates": full_top1_tokens[0]
+                in (fake_token, real_token),
             }
         )
 
@@ -611,29 +567,31 @@ def capture_vllm_prefix_replay(
         "comparison_scope": "actual_vllm_deployment_prefix_replay",
         "samples": len(replay_rows),
         "repeats": args.repeats,
-        "prompt_logprobs": int(args.prompt_logprobs),
+        "prompt_logprobs": None,
         "full_vocab_logits_saved": False,
-        "candidate_pair_logprob_gap_exact": True,
+        "full_vocab_top1_exact": True,
+        "candidate_pair_preference_exact": True,
+        "candidate_pair_gap_magnitude_available": False,
         "requested_quantization_backend": "gptq_marlin",
         "selected_quantization_backend": selected_backend,
         "quantization_tuple_sha256": manifest["tuple_sha256"],
-        "repeat_max_abs_candidate_logprob_delta": (
-            repeat_max_abs_candidate_logprob_delta
-        ),
-        "repeat_top1_agreement": (
-            sum(repeat_top1_agreements) / len(repeat_top1_agreements)
-            if repeat_top1_agreements
+        "repeat_full_top1_agreement": (
+            sum(repeat_full_top1_agreements) / len(repeat_full_top1_agreements)
+            if repeat_full_top1_agreements
             else 1.0
         ),
-        "candidate_query_top1_agreement": (
-            sum(query_top1_agreements) / len(query_top1_agreements)
-            if query_top1_agreements
+        "repeat_pair_preference_agreement": (
+            sum(repeat_pair_preference_agreements)
+            / len(repeat_pair_preference_agreements)
+            if repeat_pair_preference_agreements
             else 1.0
         ),
         "interpretation_guardrail": (
-            "vLLM exposes prompt logprobs rather than raw full-vocabulary logits. "
-            "The two old candidate logprobs are exact for the deployment path, and "
-            "their normalization cancels in the reported pair gap."
+            "The legacy CUDA 11.8/vLLM stack cannot safely compute prompt-logprob "
+            "ranks for these prefixes. This replay records the exact full-vocabulary "
+            "greedy top-1 and an exact two-candidate preference using vLLM's "
+            "allowed_token_ids processor, without requesting any logprobs. It does "
+            "not report the numerical magnitude of the candidate gap."
         ),
     }
     _write_json(metadata_path, metadata)
@@ -666,8 +624,10 @@ def compare_vllm_prefix_replay(
         fake_gap = float(
             (fake_logits[index, 0, fake_token] - fake_logits[index, 0, real_token]).item()
         )
-        vllm_gap = float(real_row["vllm_candidate_gap"])
         vllm_top1 = int(real_row["prefix_top1_token_id"])
+        vllm_pair_relation = str(
+            real_row["vllm_pair_preference_relation"]
+        )
         comparisons.append(
             {
                 **fake_row,
@@ -677,24 +637,20 @@ def compare_vllm_prefix_replay(
                 "vllm_top1_token_id": vllm_top1,
                 "fake_vllm_top1_flip": fake_top1 != vllm_top1,
                 "old_free_candidate_fake_dense_gap": fake_gap,
-                "old_free_candidate_vllm_gap": vllm_gap,
                 "fake_dense_gap_relation": gap_relation(fake_gap),
-                "vllm_gap_relation": gap_relation(vllm_gap),
-                "candidate_relation_changed": candidate_relation_changed(
-                    fake_gap, vllm_gap
+                "vllm_pair_preferred_token_id": int(
+                    real_row["vllm_pair_preferred_token_id"]
+                ),
+                "vllm_pair_preference_relation": vllm_pair_relation,
+                "candidate_relation_changed_including_fake_ties": (
+                    gap_relation(fake_gap) != vllm_pair_relation
                 ),
                 "old_free_divergence_reproduced_exactly": (
                     fake_top1 == fake_token and vllm_top1 == real_token
                 ),
-                "candidate_queries_top1_agree": bool(
-                    real_row["candidate_queries_top1_agree"]
+                "full_top1_is_one_of_old_candidates": bool(
+                    real_row["full_top1_is_one_of_old_candidates"]
                 ),
-                "fake_candidate_vllm_logprob": real_row[
-                    "fake_candidate_logprob"
-                ],
-                "real_candidate_vllm_logprob": real_row[
-                    "real_candidate_logprob"
-                ],
             }
         )
     _write_jsonl(root / "vllm_deployment_comparison.jsonl", comparisons)
@@ -709,21 +665,16 @@ def compare_vllm_prefix_replay(
                 bool(row["old_free_divergence_reproduced_exactly"])
                 for row in rows
             ),
-            "candidate_relations_changed_including_ties": sum(
-                bool(row["candidate_relation_changed"]) for row in rows
+            "candidate_relations_changed_including_fake_ties": sum(
+                bool(row["candidate_relation_changed_including_fake_ties"])
+                for row in rows
             ),
-            "candidate_query_top1_disagreements": sum(
-                not bool(row["candidate_queries_top1_agree"]) for row in rows
+            "full_top1_outside_old_candidate_pair": sum(
+                not bool(row["full_top1_is_one_of_old_candidates"])
+                for row in rows
             ),
             "fake_dense_top1_margin": numeric_summary(
                 row["fake_dense_top1_margin"] for row in rows
-            ),
-            "candidate_gap_shift": numeric_summary(
-                abs(
-                    float(row["old_free_candidate_vllm_gap"])
-                    - float(row["old_free_candidate_fake_dense_gap"])
-                )
-                for row in rows
             ),
         }
 
@@ -1021,7 +972,6 @@ def main() -> None:
         "--dataset", choices=("gsm8k", "math500"), default="math500"
     )
     capture_vllm.add_argument("--analysis-tag", default="controlled_v1")
-    capture_vllm.add_argument("--prompt-logprobs", type=int, default=1)
     capture_vllm.add_argument("--repeats", type=int, default=None)
     capture_vllm.add_argument("--overwrite", action="store_true")
     _add_vllm_args(capture_vllm)
@@ -1067,8 +1017,6 @@ def main() -> None:
             )
         if args.repeats < 1:
             raise ValueError("--repeats must be positive")
-        if args.prompt_logprobs < 1:
-            raise ValueError("--prompt-logprobs must be positive")
         capture_vllm_prefix_replay(args, config)
     elif args.command == "compare-vllm":
         compare_vllm_prefix_replay(args, config)
