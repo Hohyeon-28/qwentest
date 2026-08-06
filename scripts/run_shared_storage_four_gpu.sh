@@ -9,7 +9,13 @@ source "${SCRIPT_DIR}/shared_storage_env.sh"
 VENV_DIR="${VENV_DIR:-${PROJECT_ROOT}/qwen}"
 CONFIG="${CONFIG:-configs/experiment.yaml}"
 DATASETS="${DATASETS:-livecodebench mbpp humaneval gsm8k}"
-GPU_IDS="${GPU_IDS:-0 1 2 3}"
+if [[ -z "${GPU_IDS+x}" ]]; then
+  if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+    GPU_IDS="${CUDA_VISIBLE_DEVICES//,/ }"
+  else
+    GPU_IDS="0 1 2 3"
+  fi
+fi
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.9}"
 
 if [[ ! -f "${VENV_DIR}/bin/activate" ]]; then
@@ -33,8 +39,8 @@ if [[ -n "${CUDA_HOME:-}" ]]; then
   export PATH="${CUDA_HOME}/bin:${PATH}"
   export LD_LIBRARY_PATH="${CUDA_HOME}/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 fi
-# GPU_IDS always denotes physical nvidia-smi indices.
-unset CUDA_VISIBLE_DEVICES || true
+# Each worker below replaces CUDA_VISIBLE_DEVICES with one ID from GPU_IDS. If a
+# scheduler supplied four numeric IDs, they were adopted as the default above.
 
 read -r -a GPU_ARRAY <<< "${GPU_IDS}"
 if [[ "${#GPU_ARRAY[@]}" -ne 4 ]]; then
