@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from .logging_utils import token_ids_sha256
@@ -28,10 +29,26 @@ def build_prompt(
     }
     prompt = tokenizer.apply_chat_template(messages, tokenize=False, **template_kwargs)
     input_ids = tokenizer.apply_chat_template(messages, tokenize=True, **template_kwargs)
+    # Transformers 5 may return BatchEncoding instead of the list/tensor
+    # returned by Transformers 4.  Normalize both API shapes here.
+    if isinstance(input_ids, Mapping):
+        if "input_ids" not in input_ids:
+            raise TypeError(
+                "apply_chat_template returned a mapping without input_ids: "
+                f"{sorted(input_ids)}"
+            )
+        input_ids = input_ids["input_ids"]
+    elif hasattr(input_ids, "input_ids"):
+        input_ids = input_ids.input_ids
     if hasattr(input_ids, "tolist"):
         input_ids = input_ids.tolist()
     if input_ids and isinstance(input_ids[0], list):
         input_ids = input_ids[0]
+    if not isinstance(input_ids, (list, tuple)):
+        raise TypeError(
+            "Unsupported apply_chat_template token output: "
+            f"{type(input_ids).__name__}"
+        )
     token_ids = [int(item) for item in input_ids]
     return {
         "prompt": prompt,
