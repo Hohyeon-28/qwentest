@@ -23,7 +23,9 @@ separately because vLLM supplies its own attention kernels.
 cd ~/private/qwentest
 git pull
 unset CUDA_HOME
-bash scripts/setup_shared_storage_cuda130.sh
+python3.12 -m venv qwen-cu130
+source qwen-cu130/bin/activate
+VENV_DIR="$VIRTUAL_ENV" bash scripts/setup_shared_storage_cuda130.sh
 ```
 
 The setup script checks the installed package versions, CUDA availability,

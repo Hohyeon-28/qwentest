@@ -50,7 +50,12 @@ else
   echo "[toolkit] nvcc not found; prebuilt wheels do not require it."
 fi
 
-"${PYTHON_BIN}" -m venv "${VENV_DIR}"
+if [[ -f "${VENV_DIR}/bin/activate" ]]; then
+  echo "[venv] using existing environment: ${VENV_DIR}"
+else
+  echo "[venv] creating environment: ${VENV_DIR}"
+  "${PYTHON_BIN}" -m venv "${VENV_DIR}"
+fi
 # shellcheck disable=SC1090
 source "${VENV_DIR}/bin/activate"
 
