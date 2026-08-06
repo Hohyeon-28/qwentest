@@ -1,0 +1,16 @@
+# Modern NVIDIA runtime used on the CUDA-13-capable server.
+# vLLM 0.20.2 pins the matching PyTorch 2.11 CUDA runtime; install this file
+# with uv's --torch-backend=cu130 as done by scripts/setup_cuda130.sh.
+vllm==0.20.2
+gptqmodel==7.2.0
+
+accelerate>=1.12,<2
+datasets>=4.0,<5
+huggingface-hub>=1.0,<2
+PyYAML>=6.0
+safetensors>=0.6
+numpy>=2.0,<3
+pandas>=2.2,<4
+matplotlib>=3.10,<4
+sympy>=1.14
+pytest>=9.0,<10

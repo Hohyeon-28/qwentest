@@ -1,0 +1,102 @@
+experiment:
+  name: qwen3_8b_int4_cot_39k_cuda130_v1
+  seed: 20250724
+  # Never mix this modern-runtime run with the CUDA 11.8 results.
+  output_dir: results_cuda130_39k_v1
+
+models:
+  base: Qwen/Qwen3-8B
+  real_gptq: JunHowie/Qwen3-8B-GPTQ-Int4
+  trust_remote_code: false
+  revision: main
+
+quantization:
+  shared:
+    source: models.real_gptq
+    tuple: [qweight, scales, qzeros, g_idx]
+    bits: 4
+    group_size: 128
+    fingerprint: sha256
+  fake:
+    method: dequantize_shared_gptq
+    bits: 4
+    group_size: 128
+    symmetric: true
+    desc_act: false
+    compute_dtype: bfloat16
+    execution: torch_linear
+    source: models.real_gptq
+  real:
+    method: gptq
+    bits: 4
+    group_size: 128
+    symmetric: true
+    desc_act: false
+    backend: gptq_marlin
+    max_model_len: 40960
+    enable_chunked_prefill: false
+    # Modern vLLM V1 + CUDA graphs/torch.compile. The CUDA 11.8 protocol kept
+    # eager mode only as a compatibility workaround on the old server.
+    enforce_eager: false
+    source: models.real_gptq
+
+generation:
+  enable_thinking: true
+  max_new_tokens: 38912
+  deterministic: true
+  temperature: 0.0
+  top_p: 1.0
+  top_k: -1
+  seed: 20250724
+  batch_size: 1
+  stop_token_ids: [151645, 151643]
+
+datasets:
+  gsm8k:
+    path: openai/gsm8k
+    name: main
+    split: test
+    max_samples: null
+  math500:
+    path: HuggingFaceH4/MATH-500
+    name: null
+    split: test
+    max_samples: null
+  humaneval:
+    path: openai/openai_humaneval
+    name: null
+    split: test
+    max_samples: null
+    evaluator: openai_human_eval
+  mbpp:
+    path: google-research-datasets/mbpp
+    name: sanitized
+    split: test
+    max_samples: null
+    evaluator: mbpp_tests
+  livecodebench:
+    path: livecodebench/code_generation_lite
+    name: null
+    split: test
+    max_samples: null
+    evaluator: livecodebench
+    version_tag: release_v6
+    trust_remote_code: true
+
+throughput_benchmark:
+  batch_sizes: [1, 2, 4, 8, 16]
+  max_num_seqs: 16
+  max_samples: 64
+  max_new_tokens: 512
+
+evaluation:
+  length_buckets: [0, 513, 1025, 2049, 4097, 8193, 12289, 16385, 24577, 32769]
+  length_quantile_bins: 5
+  primary_length_outcome: fake_real_answer_disagreement
+  permutation_trials: 10000
+  max_reasoning_censored_fraction: 0.01
+  max_reasoning_incomplete_fraction: 0.01
+  warmup_samples: 2
+  logit_subset_size: 20
+  logit_top_k: 20
+  first_divergence_repeats: 2

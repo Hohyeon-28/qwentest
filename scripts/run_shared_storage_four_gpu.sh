@@ -6,7 +6,15 @@ PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/shared_storage_env.sh"
 
-VENV_DIR="${VENV_DIR:-${PROJECT_ROOT}/qwen}"
+RUNTIME_PROFILE="${RUNTIME_PROFILE:-cu118}"
+if [[ "${RUNTIME_PROFILE}" == "cu130" ]]; then
+  DEFAULT_VENV_DIR="${PROJECT_ROOT}/qwen-cu130"
+  DEFAULT_SETUP_SCRIPT="scripts/setup_shared_storage_cuda130.sh"
+else
+  DEFAULT_VENV_DIR="${PROJECT_ROOT}/qwen"
+  DEFAULT_SETUP_SCRIPT="scripts/setup_shared_storage_cuda118.sh"
+fi
+VENV_DIR="${VENV_DIR:-${DEFAULT_VENV_DIR}}"
 CONFIG="${CONFIG:-configs/experiment.yaml}"
 DATASETS="${DATASETS:-livecodebench mbpp humaneval gsm8k}"
 if [[ -z "${GPU_IDS+x}" ]]; then
@@ -20,7 +28,7 @@ GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.9}"
 
 if [[ ! -f "${VENV_DIR}/bin/activate" ]]; then
   echo "Virtual environment not found: ${VENV_DIR}" >&2
-  echo "Run: bash scripts/setup_shared_storage_cuda118.sh" >&2
+  echo "Run: bash ${DEFAULT_SETUP_SCRIPT}" >&2
   exit 1
 fi
 # shellcheck disable=SC1090
@@ -97,28 +105,52 @@ echo "[datasets] ${DATASETS}"
 echo "[physical GPUs] ${GPU_IDS}"
 echo "[queue] ${QUEUE_FILE}"
 
-python - <<'PY'
+RUNTIME_PROFILE="${RUNTIME_PROFILE}" python - <<'PY'
 from importlib.metadata import version
+import os
 
 import torch
 from transformers import PreTrainedModel
 
-expected = {
-    "torch": "2.6.0+cu118",
-    "transformers": "4.51.3",
-    "tokenizers": "0.21.1",
-}
-actual = {name: version(name) for name in expected}
-bad = {name: (actual[name], wanted) for name, wanted in expected.items()
-       if actual[name] != wanted}
-if bad:
-    raise RuntimeError(f"Incompatible experiment environment: {bad}")
-if torch.version.cuda != "11.8" or not torch.cuda.is_available():
+profile = os.environ["RUNTIME_PROFILE"]
+if profile == "cu130":
+    expected = {"vllm": "0.20.2", "gptqmodel": "7.2.0"}
+    actual = {name: version(name) for name in (*expected, "torch", "transformers")}
+    bad = {name: (actual[name], wanted) for name, wanted in expected.items()
+           if actual[name] != wanted}
+    if not actual["torch"].startswith("2.11.0"):
+        bad["torch"] = (actual["torch"], "2.11.0+cu130")
+    if bad:
+        raise RuntimeError(f"Incompatible CUDA 13 experiment environment: {bad}")
+    expected_cuda = "13.0"
+elif profile == "cu118":
+    expected = {
+        "torch": "2.6.0+cu118",
+        "transformers": "4.51.3",
+        "tokenizers": "0.21.1",
+    }
+    actual = {name: version(name) for name in expected}
+    bad = {name: (actual[name], wanted) for name, wanted in expected.items()
+           if actual[name] != wanted}
+    if bad:
+        raise RuntimeError(f"Incompatible CUDA 11.8 experiment environment: {bad}")
+    expected_cuda = "11.8"
+else:
+    raise RuntimeError(f"Unknown RUNTIME_PROFILE={profile}")
+if torch.version.cuda != expected_cuda or not torch.cuda.is_available():
     raise RuntimeError(
-        f"Expected an available PyTorch CUDA 11.8 runtime, found {torch.version.cuda}"
+        f"Expected available PyTorch CUDA {expected_cuda}, found {torch.version.cuda}"
     )
+capabilities = [torch.cuda.get_device_capability(index)
+                for index in range(torch.cuda.device_count())]
+if profile == "cu130" and any(item < (8, 0) for item in capabilities):
+    raise RuntimeError(
+        f"GPTQ-Marlin requires Ampere-or-newer GPUs, found {capabilities}"
+    )
+print("[runtime profile]", profile)
 print("[preflight]", actual)
 print("[visible GPUs]", torch.cuda.device_count())
+print("[compute capabilities]", capabilities)
 PY
 
 for dataset in "${DATASET_ARRAY[@]}"; do
@@ -173,18 +205,30 @@ run_condition() {
           2>&1 | tee "${log_path}"
       ;;
     real_quant_marlin)
-      CUDA_VISIBLE_DEVICES="${gpu_id}" \
-      VLLM_WORKER_MULTIPROC_METHOD="${VLLM_WORKER_MULTIPROC_METHOD:-spawn}" \
-      VLLM_USE_V1="${VLLM_USE_V1:-0}" \
-      TORCHDYNAMO_DISABLE="${TORCHDYNAMO_DISABLE:-1}" \
-      TORCH_COMPILE_DISABLE="${TORCH_COMPILE_DISABLE:-1}" \
-      PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}" \
-        python scripts/run_vllm_marlin.py \
-          --config "${CONFIG}" \
-          --dataset "${dataset}" \
-          --tensor-parallel-size 1 \
-          --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
-          2>&1 | tee "${log_path}"
+      if [[ "${RUNTIME_PROFILE}" == "cu130" ]]; then
+        CUDA_VISIBLE_DEVICES="${gpu_id}" \
+        VLLM_WORKER_MULTIPROC_METHOD="${VLLM_WORKER_MULTIPROC_METHOD:-spawn}" \
+        PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}" \
+          python scripts/run_vllm_marlin.py \
+            --config "${CONFIG}" \
+            --dataset "${dataset}" \
+            --tensor-parallel-size 1 \
+            --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
+            2>&1 | tee "${log_path}"
+      else
+        CUDA_VISIBLE_DEVICES="${gpu_id}" \
+        VLLM_WORKER_MULTIPROC_METHOD="${VLLM_WORKER_MULTIPROC_METHOD:-spawn}" \
+        VLLM_USE_V1="${VLLM_USE_V1:-0}" \
+        TORCHDYNAMO_DISABLE="${TORCHDYNAMO_DISABLE:-1}" \
+        TORCH_COMPILE_DISABLE="${TORCH_COMPILE_DISABLE:-1}" \
+        PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}" \
+          python scripts/run_vllm_marlin.py \
+            --config "${CONFIG}" \
+            --dataset "${dataset}" \
+            --tensor-parallel-size 1 \
+            --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
+            2>&1 | tee "${log_path}"
+      fi
       ;;
     *)
       echo "Unknown condition: ${condition}" >&2

@@ -105,11 +105,6 @@ def main() -> None:
             "The validated Qwen3 protocol requires ordered stop_token_ids "
             f"{expected_qwen_stops}, found {stop_token_ids}"
         )
-    if not bool(config["quantization"]["real"].get("enforce_eager", False)):
-        errors.append(
-            "The validated CUDA 11.8 protocol requires real.enforce_eager=true"
-        )
-
     report = {
         "valid": not errors,
         "dataset": args.dataset,
