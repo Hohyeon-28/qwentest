@@ -88,6 +88,22 @@ The setup wrapper requires a CUDA 11.8 toolkit from `CUDA_HOME`, the current
 silently changing the software stack between servers. Results remain under
 `qwentest/results_39k_v2`; all other caches are direct children of `STORAGE_ROOT`.
 
+For four independent GPUs, use the dynamic suite scheduler. Qwen3-8B fits on one
+GPU, so the scheduler keeps tensor parallelism at one and assigns independent
+dataset/condition jobs to the first free GPU. This preserves the execution method
+while maximizing aggregate utilization:
+
+```bash
+STORAGE_ROOT="$PWD" \
+GPU_IDS="0 1 2 3" \
+DATASETS="livecodebench mbpp humaneval gsm8k" \
+bash qwentest/scripts/run_shared_storage_four_gpu.sh
+```
+
+Each job writes a distinct condition file, so concurrent workers never append to
+the same predictions JSONL. Re-running the command resumes every condition by
+sample ID. The queue and per-GPU logs are retained under `results_39k_v2`.
+
 ## Why 27.48 tok/s is not evidence of a slow Marlin kernel
 
 The quality protocol uses `generation.batch_size=1` and `enforce_eager=true`.
