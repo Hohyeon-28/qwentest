@@ -57,7 +57,7 @@ def test_mbpp_sanitized_schema_uses_prompt_and_test_imports():
     assert samples[0]["code_evaluation"]["test_setup_code"] == "import math"
 
 
-def test_livecodebench_release_is_forwarded_to_official_loader():
+def test_livecodebench_release_uses_materialized_official_json_files():
     config = {
         "datasets": {
             "livecodebench": {
@@ -85,6 +85,16 @@ def test_livecodebench_release_is_forwarded_to_official_loader():
     samples, observed = _with_fake_datasets(
         rows, lambda: load_samples(config, "livecodebench")
     )
-    assert observed["version_tag"] == "release_v6"
-    assert observed["trust_remote_code"] is True
+    assert observed["path"] == "json"
+    assert observed["split"] == "test"
+    assert observed["data_files"]["test"] == [
+        "hf://datasets/livecodebench/code_generation_lite/test.jsonl",
+        "hf://datasets/livecodebench/code_generation_lite/test2.jsonl",
+        "hf://datasets/livecodebench/code_generation_lite/test3.jsonl",
+        "hf://datasets/livecodebench/code_generation_lite/test4.jsonl",
+        "hf://datasets/livecodebench/code_generation_lite/test5.jsonl",
+        "hf://datasets/livecodebench/code_generation_lite/test6.jsonl",
+    ]
+    assert "version_tag" not in observed
+    assert "trust_remote_code" not in observed
     assert samples[0]["sample_id"] == "abc"

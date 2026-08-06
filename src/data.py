@@ -12,6 +12,34 @@ CODE_SYSTEM_MESSAGE = (
 )
 
 
+def _livecodebench_json_files(repo_id: str, version_tag: str) -> list[str]:
+    """Resolve the official LiveCodeBench version to materialized JSONL files.
+
+    Hugging Face Datasets 4 no longer executes remote dataset scripts.  The
+    upstream script defines release_vN as the cumulative test..testN files, so
+    reproduce that mapping with the built-in JSON loader instead.
+    """
+
+    if version_tag == "release_latest":
+        start, end = 1, 6
+    elif match := re.fullmatch(r"release_v([1-6])", version_tag):
+        start, end = 1, int(match.group(1))
+    elif match := re.fullmatch(r"v([1-6])", version_tag):
+        start = end = int(match.group(1))
+    elif match := re.fullmatch(r"v([1-6])_v([1-6])", version_tag):
+        start, end = int(match.group(1)), int(match.group(2))
+        if start > end:
+            raise ValueError(f"Invalid LiveCodeBench version range: {version_tag}")
+    else:
+        raise ValueError(f"Unsupported LiveCodeBench version: {version_tag}")
+
+    names = [
+        "test.jsonl" if index == 1 else f"test{index}.jsonl"
+        for index in range(start, end + 1)
+    ]
+    return [f"hf://datasets/{repo_id}/{name}" for name in names]
+
+
 def count_gsm8k_gold_calculation_steps(answer: str) -> int:
     """Count GSM8K's explicit calculator annotations as gold calculation steps."""
 
@@ -28,16 +56,27 @@ def load_samples(
     from datasets import load_dataset
 
     dataset_config = config["datasets"][dataset_name]
-    kwargs: dict[str, Any] = {
-        "path": dataset_config["path"],
-        "split": dataset_config["split"],
-    }
-    if dataset_config.get("name"):
-        kwargs["name"] = dataset_config["name"]
-    if dataset_config.get("version_tag"):
-        kwargs["version_tag"] = dataset_config["version_tag"]
-    if dataset_config.get("trust_remote_code") is not None:
-        kwargs["trust_remote_code"] = bool(dataset_config["trust_remote_code"])
+    if dataset_name == "livecodebench":
+        split = str(dataset_config["split"])
+        version_tag = str(dataset_config.get("version_tag") or "release_latest")
+        kwargs: dict[str, Any] = {
+            "path": "json",
+            "data_files": {
+                split: _livecodebench_json_files(
+                    str(dataset_config["path"]), version_tag
+                )
+            },
+            "split": split,
+        }
+    else:
+        kwargs = {
+            "path": dataset_config["path"],
+            "split": dataset_config["split"],
+        }
+        if dataset_config.get("name"):
+            kwargs["name"] = dataset_config["name"]
+        if dataset_config.get("trust_remote_code") is not None:
+            kwargs["trust_remote_code"] = bool(dataset_config["trust_remote_code"])
     dataset = load_dataset(**kwargs)
     limit = max_samples if max_samples is not None else dataset_config.get("max_samples")
     if limit is not None:
