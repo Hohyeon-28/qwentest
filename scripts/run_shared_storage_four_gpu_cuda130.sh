@@ -6,7 +6,7 @@ PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 DEFAULT_SHARED_ROOT="${HOME}/shared/hdd_ext/nvme4000/${USER}"
 
 export RUNTIME_PROFILE=cu130
-export VENV_DIR="${VENV_DIR:-${PROJECT_ROOT}/qwen-cu130}"
+export VENV_DIR="${VENV_DIR:-${VIRTUAL_ENV:-${PROJECT_ROOT}/qwen-cu130}}"
 export CONFIG="${CONFIG:-configs/experiment_cuda130.yaml}"
 export STORAGE_ROOT="${STORAGE_ROOT:-${DEFAULT_SHARED_ROOT}}"
 export EXPERIMENT_CACHE_ROOT="${EXPERIMENT_CACHE_ROOT:-${STORAGE_ROOT}}"

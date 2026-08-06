@@ -41,6 +41,31 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 \
   bash scripts/run_shared_storage_four_gpu_cuda130.sh
 ```
 
+For an explicit pause between the pilot and the remaining datasets, use the
+two-stage entrypoints instead. Stage 1 runs GSM8K BF16/Fake/Real concurrently
+on three GPUs and then exits after validation, comparison, and plots:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+  bash scripts/run_shared_storage_stage1_cuda130.sh
+```
+
+Inspect the GSM8K output. Start stage 2 only when ready; it queues the nine
+HumanEval/MBPP/LiveCodeBench condition jobs over all four GPUs:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+  bash scripts/run_shared_storage_stage2_cuda130.sh
+```
+
+Every condition writes sample-level prompt/generated token IDs, generated
+text, reasoning/final text, completion state, truncation state, answer/code,
+and timing data to `predictions.jsonl`. GSM8K is scored and plotted
+automatically. Code datasets are exported for an official sandbox harness;
+after importing the harness pass/fail results, `compare_code_results.py`
+produces pass@1, confidence intervals, Fake/Real correctness and exact-code
+agreement, McNemar tests, and BF16-reasoning-length quintiles.
+
 The dynamic queue runs BF16, Fake INT4, and Real GPTQ-Marlin jobs across all
 four GPUs. Code and the virtual environment remain under `~/private/qwentest`.
 Downloaded models/datasets and runtime caches are stored under

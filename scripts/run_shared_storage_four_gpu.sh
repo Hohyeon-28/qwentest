@@ -36,7 +36,7 @@ source "${VENV_DIR}/bin/activate"
 cd "${PROJECT_ROOT}"
 
 if ! command -v flock >/dev/null 2>&1; then
-  echo "flock (util-linux) is required for the dynamic four-GPU queue." >&2
+  echo "flock (util-linux) is required for the dynamic GPU queue." >&2
   exit 1
 fi
 if [[ -n "${CUDA_HOME:-}" ]]; then
@@ -47,15 +47,14 @@ if [[ -n "${CUDA_HOME:-}" ]]; then
   export PATH="${CUDA_HOME}/bin:${PATH}"
   export LD_LIBRARY_PATH="${CUDA_HOME}/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 fi
-# Each worker below replaces CUDA_VISIBLE_DEVICES with one ID from GPU_IDS. If a
-# scheduler supplied four numeric IDs, they were adopted as the default above.
+# Each worker below replaces CUDA_VISIBLE_DEVICES with one ID from GPU_IDS.
 
 read -r -a GPU_ARRAY <<< "${GPU_IDS}"
-if [[ "${#GPU_ARRAY[@]}" -ne 4 ]]; then
-  echo "GPU_IDS must contain exactly four physical GPU IDs." >&2
+if [[ "${#GPU_ARRAY[@]}" -lt 1 || "${#GPU_ARRAY[@]}" -gt 4 ]]; then
+  echo "GPU_IDS must contain between one and four physical GPU IDs." >&2
   exit 2
 fi
-if [[ "$(printf '%s\n' "${GPU_ARRAY[@]}" | sort -u | wc -l)" -ne 4 ]]; then
+if [[ "$(printf '%s\n' "${GPU_ARRAY[@]}" | sort -u | wc -l)" -ne "${#GPU_ARRAY[@]}" ]]; then
   echo "GPU_IDS contains duplicate GPU IDs: ${GPU_IDS}" >&2
   exit 2
 fi
