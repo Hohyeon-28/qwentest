@@ -20,7 +20,7 @@ separately because vLLM supplies its own attention kernels.
 ## One-time setup
 
 ```bash
-cd ~/shared/hdd_ext/nvme4000/hohyeon/qwentest
+cd ~/private/qwentest
 git pull
 unset CUDA_HOME
 bash scripts/setup_shared_storage_cuda130.sh
@@ -33,15 +33,18 @@ compatible experiment runtime.
 ## Four-GPU run
 
 ```bash
-cd ~/shared/hdd_ext/nvme4000/hohyeon/qwentest
+cd ~/private/qwentest
 tmux new -s qwen-cuda130
 CUDA_VISIBLE_DEVICES=0,1,2,3 \
   bash scripts/run_shared_storage_four_gpu_cuda130.sh
 ```
 
 The dynamic queue runs BF16, Fake INT4, and Real GPTQ-Marlin jobs across all
-four GPUs. Results are isolated under `results_cuda130_39k_v1/`; they never
-overwrite `results_39k_v2/` from the CUDA 11.8 run.
+four GPUs. Code and the virtual environment remain under `~/private/qwentest`.
+Downloaded models/datasets and runtime caches are stored under
+`~/shared/hdd_ext/nvme4000/hohyeon/`, while results are isolated under
+`~/shared/hdd_ext/nvme4000/hohyeon/qwentest_results/results_cuda130_39k_v1/`.
+They never overwrite `results_39k_v2/` from the CUDA 11.8 run.
 
 To select datasets explicitly:
 

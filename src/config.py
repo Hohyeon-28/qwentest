@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +29,13 @@ def public_config(config: dict[str, Any]) -> dict[str, Any]:
 
 def results_root(config: dict[str, Any], dataset: str | None = None) -> Path:
     raw = Path(config["experiment"]["output_dir"])
-    root = raw if raw.is_absolute() else PROJECT_ROOT / raw
+    external_root = os.environ.get("EXPERIMENT_OUTPUT_ROOT")
+    if raw.is_absolute():
+        root = raw
+    elif external_root:
+        root = Path(external_root).expanduser() / raw
+    else:
+        root = PROJECT_ROOT / raw
     return root / dataset if dataset else root
 
 

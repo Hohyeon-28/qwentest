@@ -80,7 +80,7 @@ done
 
 OUTPUT_ROOT="$(
   python -c \
-    'import sys; from src.config import load_config; print(load_config(sys.argv[1])["experiment"]["output_dir"])' \
+    'import sys; from src.config import load_config, results_root; print(results_root(load_config(sys.argv[1])))' \
     "${CONFIG}"
 )"
 SUITE_LOG_DIR="${OUTPUT_ROOT}/four_gpu_runner_logs"
@@ -100,6 +100,8 @@ done
 
 echo "[storage] ${STORAGE_ROOT}"
 echo "[repo] ${PROJECT_ROOT}"
+echo "[model/cache] ${EXPERIMENT_CACHE_ROOT}"
+echo "[results] ${OUTPUT_ROOT}"
 echo "[venv] ${VENV_DIR}"
 echo "[datasets] ${DATASETS}"
 echo "[physical GPUs] ${GPU_IDS}"
@@ -305,5 +307,5 @@ for dataset in "${DATASET_ARRAY[@]}"; do
   fi
 done
 
-echo "[done] four-GPU suite completed under ${PROJECT_ROOT}/${OUTPUT_ROOT}/"
+echo "[done] four-GPU suite completed under ${OUTPUT_ROOT}/"
 echo "[pending] code datasets require official sandbox execution and result import."
