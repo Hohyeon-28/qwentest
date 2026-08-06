@@ -5,21 +5,28 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 cd "${PROJECT_ROOT}"
 
-VENV_DIR="${1:-.venv-cu130}"
-TEST_GPU="${CUDA_TEST_DEVICE:-0}"
-PYTHON_BIN="${PYTHON_BIN:-}"
-if [[ -z "${PYTHON_BIN:-}" ]]; then
-  for candidate in python3.12 python3.11 python3.10 python3; do
-    if command -v "${candidate}" >/dev/null 2>&1; then
-      PYTHON_BIN="${candidate}"
-      break
-    fi
-  done
-fi
-if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
-  echo "Python 3.10-3.13 was not found. Set PYTHON_BIN explicitly." >&2
+if [[ -z "${VIRTUAL_ENV:-}" ]]; then
+  echo "No virtual environment is active." >&2
+  echo "Create and activate one before running this installer:" >&2
+  echo "  python3 -m venv qwen-cu130" >&2
+  echo "  source qwen-cu130/bin/activate" >&2
   exit 1
 fi
+
+VENV_DIR="${1:-${VIRTUAL_ENV}}"
+if [[ ! -f "${VENV_DIR}/bin/activate" ]]; then
+  echo "Virtual environment does not exist: ${VENV_DIR}" >&2
+  exit 1
+fi
+if [[ "$(readlink -f "${VENV_DIR}")" != "$(readlink -f "${VIRTUAL_ENV}")" ]]; then
+  echo "Active virtual environment does not match VENV_DIR." >&2
+  echo "VIRTUAL_ENV=${VIRTUAL_ENV}" >&2
+  echo "VENV_DIR=${VENV_DIR}" >&2
+  exit 1
+fi
+
+TEST_GPU="${CUDA_TEST_DEVICE:-0}"
+PYTHON_BIN="${VENV_DIR}/bin/python"
 if ! "${PYTHON_BIN}" -c \
   'import sys; raise SystemExit(not ((3, 10) <= sys.version_info[:2] < (3, 14)))'; then
   echo "vLLM 0.20.2 requires Python 3.10-3.13; found $(${PYTHON_BIN} -V)." >&2
@@ -50,16 +57,9 @@ else
   echo "[toolkit] nvcc not found; prebuilt wheels do not require it."
 fi
 
-if [[ -f "${VENV_DIR}/bin/activate" ]]; then
-  echo "[venv] using existing environment: ${VENV_DIR}"
-else
-  echo "[venv] creating environment: ${VENV_DIR}"
-  "${PYTHON_BIN}" -m venv "${VENV_DIR}"
-fi
-# shellcheck disable=SC1090
-source "${VENV_DIR}/bin/activate"
+echo "[venv] installing into active environment: ${VENV_DIR}"
 
-python -m pip install --upgrade pip uv
+"${PYTHON_BIN}" -m pip install --upgrade pip uv
 # uv selects the official CUDA 13.0 PyTorch index and keeps vLLM's exact torch
 # dependency intact.  flash-attn/torchvision/torchaudio are not used here.
 uv pip install --python "${VENV_DIR}/bin/python" \
@@ -67,7 +67,7 @@ uv pip install --python "${VENV_DIR}/bin/python" \
   -r requirements-cu130.txt
 uv pip check --python "${VENV_DIR}/bin/python"
 
-CUDA_VISIBLE_DEVICES="${TEST_GPU}" python - <<'PY'
+CUDA_VISIBLE_DEVICES="${TEST_GPU}" "${PYTHON_BIN}" - <<'PY'
 from importlib.metadata import version
 
 import torch

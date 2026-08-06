@@ -14,7 +14,12 @@ fi
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/shared_storage_env.sh"
 
-VENV_DIR="${VENV_DIR:-${PROJECT_ROOT}/qwen-cu130}"
+if [[ -z "${VIRTUAL_ENV:-}" ]]; then
+  echo "No virtual environment is active." >&2
+  echo "Run: python3 -m venv qwen-cu130 && source qwen-cu130/bin/activate" >&2
+  exit 1
+fi
+VENV_DIR="${VENV_DIR:-${VIRTUAL_ENV}}"
 export VENV_DIR
 
 echo "[storage] ${STORAGE_ROOT}"
