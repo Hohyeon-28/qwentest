@@ -5,6 +5,8 @@ import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from .code_eval import CODE_DATASETS, extract_python_code
+
 
 NUMBER_RE = re.compile(r"[-+]?(?:\d[\d,]*\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
 
@@ -140,7 +142,24 @@ def score_record(record: dict[str, Any], dataset: str) -> dict[str, Any]:
             if thinking_enabled
             else record.get("generated_text", "")
         )
-        predicted = extract_answer(dataset, final_text)
+        predicted = (
+            extract_python_code(final_text)
+            if dataset in CODE_DATASETS
+            else extract_answer(dataset, final_text)
+        )
+    if dataset in CODE_DATASETS:
+        updated = dict(record)
+        updated["final_answer"] = predicted
+        updated["normalized_ground_truth"] = None
+        if "code_execution_passed" in record:
+            updated["is_correct"] = bool(record["code_execution_passed"])
+            updated["evaluation_status"] = "scored_by_external_code_harness"
+        else:
+            updated["is_correct"] = None
+            updated["evaluation_status"] = "pending_external_code_execution"
+        updated["answer_extraction_failed"] = predicted is None
+        updated["reasoning_incomplete"] = reasoning_incomplete
+        return updated
     truth = ground_truth_answer(dataset, str(record["ground_truth"]))
     updated = dict(record)
     updated["final_answer"] = predicted

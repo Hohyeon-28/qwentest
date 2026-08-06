@@ -69,6 +69,34 @@ datasets:
     name: null
     split: test
     max_samples: null
+  humaneval:
+    path: openai/openai_humaneval
+    name: null
+    split: test
+    max_samples: null
+    evaluator: openai_human_eval
+  mbpp:
+    path: google-research-datasets/mbpp
+    name: sanitized
+    split: test
+    max_samples: null
+    evaluator: mbpp_tests
+  livecodebench:
+    path: livecodebench/code_generation_lite
+    name: null
+    split: test
+    max_samples: null
+    evaluator: livecodebench
+    # Pin a release. "release_latest" is unsuitable for a reproducible study.
+    version_tag: release_v6
+    trust_remote_code: true
+
+throughput_benchmark:
+  # This is separate from the batch_size=1 quality/CoT protocol above.
+  batch_sizes: [1, 2, 4, 8, 16]
+  max_num_seqs: 16
+  max_samples: 64
+  max_new_tokens: 512
 
 evaluation:
   # Fixed bins remain useful for absolute-length reporting. Balanced BF16

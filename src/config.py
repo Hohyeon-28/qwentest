@@ -10,6 +10,7 @@ import yaml
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATASET_CHOICES = ("gsm8k", "math500", "humaneval", "mbpp", "livecodebench")
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -33,7 +34,7 @@ def results_root(config: dict[str, Any], dataset: str | None = None) -> Path:
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", default="configs/experiment.yaml")
-    parser.add_argument("--dataset", choices=("gsm8k", "math500"), default="gsm8k")
+    parser.add_argument("--dataset", choices=DATASET_CHOICES, default="gsm8k")
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--overwrite", action="store_true")

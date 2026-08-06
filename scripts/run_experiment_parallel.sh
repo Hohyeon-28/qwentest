@@ -17,10 +17,13 @@ OUTPUT_ROOT="$(
 )"
 LOG_DIR="${OUTPUT_ROOT}/${DATASET}/runner_logs"
 
-if [[ "${DATASET}" != "gsm8k" && "${DATASET}" != "math500" ]]; then
-  echo "Usage: bash scripts/run_experiment_parallel.sh [gsm8k|math500] [bf16_gpu] [quant_gpu]" >&2
+case "${DATASET}" in
+  gsm8k|math500|humaneval|mbpp|livecodebench) ;;
+  *)
+  echo "Usage: bash scripts/run_experiment_parallel.sh [gsm8k|math500|humaneval|mbpp|livecodebench] [bf16_gpu] [quant_gpu]" >&2
   exit 2
-fi
+  ;;
+esac
 
 if [[ "${BF16_GPU}" == "${QUANT_GPU}" ]]; then
   echo "BF16 and quantized workers must use different physical GPU IDs." >&2
@@ -93,6 +96,16 @@ if (( BF16_STATUS != 0 || QUANT_STATUS != 0 )); then
   echo "A worker failed: BF16=${BF16_STATUS}, Fake/Real=${QUANT_STATUS}" >&2
   echo "Inspect ${LOG_DIR}/ for details." >&2
   exit 1
+fi
+
+if [[ "${DATASET}" == "humaneval" || "${DATASET}" == "mbpp" || "${DATASET}" == "livecodebench" ]]; then
+  python scripts/export_code_eval.py \
+    --config "${CONFIG}" \
+    --dataset "${DATASET}" \
+    --all
+  echo "[done] generations exported for the official code harness."
+  echo "[pending] run code evaluation in an isolated sandbox, then import pass/fail results."
+  exit 0
 fi
 
 python scripts/evaluate_answers.py \

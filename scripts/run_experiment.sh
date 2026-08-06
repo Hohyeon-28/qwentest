@@ -15,10 +15,13 @@ OUTPUT_ROOT="$(
     "${CONFIG}"
 )"
 
-if [[ "${DATASET}" != "gsm8k" && "${DATASET}" != "math500" ]]; then
-  echo "Usage: bash scripts/run_experiment.sh [gsm8k|math500] [physical_gpu_id]" >&2
+case "${DATASET}" in
+  gsm8k|math500|humaneval|mbpp|livecodebench) ;;
+  *)
+  echo "Usage: bash scripts/run_experiment.sh [gsm8k|math500|humaneval|mbpp|livecodebench] [physical_gpu_id]" >&2
   exit 2
-fi
+  ;;
+esac
 
 export CUDA_VISIBLE_DEVICES="${GPU_ID}"
 export VLLM_WORKER_MULTIPROC_METHOD="${VLLM_WORKER_MULTIPROC_METHOD:-spawn}"
@@ -54,6 +57,16 @@ python scripts/run_vllm_marlin.py \
   --dataset "${DATASET}" \
   --tensor-parallel-size 1 \
   --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}"
+
+if [[ "${DATASET}" == "humaneval" || "${DATASET}" == "mbpp" || "${DATASET}" == "livecodebench" ]]; then
+  python scripts/export_code_eval.py \
+    --config "${CONFIG}" \
+    --dataset "${DATASET}" \
+    --all
+  echo "[done] generations exported for the official code harness."
+  echo "[pending] run code evaluation in an isolated sandbox, then import pass/fail results."
+  exit 0
+fi
 
 python scripts/evaluate_answers.py \
   --config "${CONFIG}" \

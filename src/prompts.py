@@ -5,12 +5,23 @@ from typing import Any
 from .logging_utils import token_ids_sha256
 
 
-def make_messages(question: str) -> list[dict[str, str]]:
-    return [{"role": "user", "content": question}]
+def make_messages(
+    question: str, system_message: str | None = None
+) -> list[dict[str, str]]:
+    messages: list[dict[str, str]] = []
+    if system_message:
+        messages.append({"role": "system", "content": system_message})
+    messages.append({"role": "user", "content": question})
+    return messages
 
 
-def build_prompt(tokenizer: Any, question: str, enable_thinking: bool) -> dict[str, Any]:
-    messages = make_messages(question)
+def build_prompt(
+    tokenizer: Any,
+    question: str,
+    enable_thinking: bool,
+    system_message: str | None = None,
+) -> dict[str, Any]:
+    messages = make_messages(question, system_message)
     template_kwargs = {
         "add_generation_prompt": True,
         "enable_thinking": enable_thinking,

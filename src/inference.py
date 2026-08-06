@@ -112,6 +112,7 @@ def warmup_hf(
             tokenizer,
             sample["question"],
             bool(config["generation"]["enable_thinking"]),
+            sample.get("system_message"),
         )
         encoded = torch.tensor([prompt["input_token_ids"]], dtype=torch.long, device=device)
         model.generate(
@@ -162,6 +163,7 @@ def run_hf_generation(
             tokenizer,
             sample["question"],
             bool(config["generation"]["enable_thinking"]),
+            sample.get("system_message"),
         )
         prepared.append(
             {
@@ -191,6 +193,7 @@ def run_hf_generation(
             prompt_width = encoded["input_ids"].shape[1]
 
             amortized_latency = elapsed / len(group)
+            batch_id = f"{condition}:" + ",".join(str(row["sample_id"]) for row in group)
             for row, output_ids in zip(group, generated):
                 new_ids = [int(item) for item in output_ids[prompt_width:].tolist()]
                 new_ids = _trim_after_first_stop(new_ids, configured_stops)
@@ -232,6 +235,7 @@ def run_hf_generation(
                     **protocol,
                     "total_sequence_length": row["input_token_count"] + len(new_ids),
                     "batch_size_used": len(group),
+                    "generation_batch_id": batch_id,
                     "prefill_latency_seconds": None,
                     "time_to_first_token_seconds": None,
                     "decode_latency_seconds": None,

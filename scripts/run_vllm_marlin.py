@@ -206,7 +206,10 @@ def main() -> None:
             continue
         started = time.perf_counter()
         prompt = build_prompt(
-            tokenizer, sample["question"], bool(generation["enable_thinking"])
+            tokenizer,
+            sample["question"],
+            bool(generation["enable_thinking"]),
+            sample.get("system_message"),
         )
         tokenization_latency = time.perf_counter() - started
         prepared.append(
@@ -230,6 +233,9 @@ def main() -> None:
             started = time.perf_counter()
             outputs = llm.generate(requests, sampling, use_tqdm=False)
             batch_elapsed = time.perf_counter() - started
+            batch_id = "real_quant_marlin:" + ",".join(
+                str(row["sample_id"]) for row in group
+            )
             for row, request_output in zip(group, outputs):
                 completion = request_output.outputs[0]
                 output_ids = [int(item) for item in completion.token_ids]
@@ -277,6 +283,7 @@ def main() -> None:
                     **protocol,
                     "total_sequence_length": row["input_token_count"] + len(output_ids),
                     "batch_size_used": len(group),
+                    "generation_batch_id": batch_id,
                     "prefill_latency_seconds": (
                         first - arrival
                         if first is not None and arrival is not None

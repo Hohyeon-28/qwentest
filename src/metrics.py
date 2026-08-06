@@ -168,6 +168,11 @@ def summarize_predictions(records: list[dict[str, Any]]) -> dict[str, Any]:
             "avg_generated_tokens": None,
             "total_latency_seconds": 0.0,
             "tokens_per_second": None,
+            "request_latency_tokens_per_second": None,
+            "aggregate_generation_tokens_per_second": None,
+            "aggregate_generation_wall_seconds": 0.0,
+            "scored_samples": 0,
+            "pending_code_evaluation": 0,
             "answer_extraction_failures": 0,
             "max_token_truncations": 0,
             "reasoning_length_censored": 0,
@@ -175,9 +180,27 @@ def summarize_predictions(records: list[dict[str, Any]]) -> dict[str, Any]:
             "completed_reasoning_traces": 0,
             "avg_completed_reasoning_tokens": None,
         }
-    correct = sum(bool(record.get("is_correct")) for record in records)
+    scored = [record for record in records if isinstance(record.get("is_correct"), bool)]
+    correct = sum(bool(record.get("is_correct")) for record in scored)
     generated = sum(int(record.get("generated_token_count") or 0) for record in records)
     total_latency = sum(float(record.get("total_generation_latency_seconds") or 0) for record in records)
+    batch_seconds: dict[str, float] = {}
+    aggregate_available = True
+    for index, record in enumerate(records):
+        batch_id = record.get("generation_batch_id")
+        batch_elapsed = record.get("batch_generation_latency_seconds")
+        if batch_id is None:
+            if int(record.get("batch_size_used") or 1) == 1 and batch_elapsed is not None:
+                batch_id = f"legacy-single-{index}"
+            else:
+                aggregate_available = False
+                continue
+        if batch_elapsed is None:
+            aggregate_available = False
+            continue
+        key = str(batch_id)
+        batch_seconds[key] = max(batch_seconds.get(key, 0.0), float(batch_elapsed))
+    aggregate_seconds = sum(batch_seconds.values()) if aggregate_available else None
     reasoning_counts = [int(record.get("reasoning_token_count") or 0) for record in records]
     completed_reasoning_counts = [
         int(record.get("reasoning_token_count") or 0)
@@ -188,12 +211,29 @@ def summarize_predictions(records: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "samples": len(records),
         "correct": correct,
-        "accuracy": correct / len(records),
-        "accuracy_ci95_wilson": wilson_interval(correct, len(records)),
+        "scored_samples": len(scored),
+        "pending_code_evaluation": len(records) - len(scored),
+        "accuracy": correct / len(scored) if scored else None,
+        "accuracy_ci95_wilson": wilson_interval(correct, len(scored)),
         "avg_reasoning_tokens": mean(reasoning_counts),
         "avg_generated_tokens": mean(generation_counts),
         "total_latency_seconds": total_latency,
         "tokens_per_second": generated / total_latency if total_latency > 0 else None,
+        "request_latency_tokens_per_second": (
+            generated / total_latency if total_latency > 0 else None
+        ),
+        "tokens_per_second_definition": (
+            "generated tokens / sum of per-request latencies; not aggregate throughput"
+        ),
+        "aggregate_generation_wall_seconds": aggregate_seconds,
+        "aggregate_generation_tokens_per_second": (
+            generated / aggregate_seconds
+            if aggregate_seconds is not None and aggregate_seconds > 0
+            else None
+        ),
+        "aggregate_throughput_definition": (
+            "generated tokens / sum of unique batch wall times"
+        ),
         "answer_extraction_failures": sum(
             bool(record.get("answer_extraction_failed")) for record in records
         ),

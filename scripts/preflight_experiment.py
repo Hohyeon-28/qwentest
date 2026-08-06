@@ -9,7 +9,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.config import load_config, results_root
+from src.config import DATASET_CHOICES, load_config, results_root
 from src.data import load_samples
 from src.prompts import build_prompt
 
@@ -41,7 +41,7 @@ def main() -> None:
         description="Validate prompt/output context budgets before a long run"
     )
     parser.add_argument("--config", default="configs/experiment.yaml")
-    parser.add_argument("--dataset", choices=("gsm8k", "math500"), default="gsm8k")
+    parser.add_argument("--dataset", choices=DATASET_CHOICES, default="gsm8k")
     args = parser.parse_args()
     config = load_config(args.config)
 
@@ -59,6 +59,7 @@ def main() -> None:
                 tokenizer,
                 sample["question"],
                 bool(config["generation"]["enable_thinking"]),
+                sample.get("system_message"),
             )["input_token_ids"]
         )
         for sample in samples
