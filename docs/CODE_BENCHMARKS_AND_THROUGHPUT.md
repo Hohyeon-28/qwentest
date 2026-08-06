@@ -72,6 +72,22 @@ It generates BF16 on GPU 6 and Fake then Real on GPU 7, resumes by sample ID, an
 stops after exporting official-harness inputs. Accuracy remains `null` until the
 external code-execution results are imported.
 
+### Shared-storage server
+
+When the repository is cloned under a large shared-storage directory, keep the
+virtual environment, model/dataset caches, compiler caches, temporary files, and
+results under the same storage root:
+
+```bash
+STORAGE_ROOT="$PWD" bash qwentest/scripts/setup_shared_storage_cuda118.sh
+STORAGE_ROOT="$PWD" bash qwentest/scripts/run_shared_storage_parallel.sh humaneval 6 7
+```
+
+The setup wrapper requires a CUDA 11.8 toolkit from `CUDA_HOME`, the current
+`nvcc`, or `/usr/local/cuda-11.8`. It refuses a different toolkit rather than
+silently changing the software stack between servers. Results remain under
+`qwentest/results_39k_v2`; all other caches are direct children of `STORAGE_ROOT`.
+
 ## Why 27.48 tok/s is not evidence of a slow Marlin kernel
 
 The quality protocol uses `generation.batch_size=1` and `enforce_eager=true`.
